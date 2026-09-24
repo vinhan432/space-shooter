@@ -1,0 +1,970 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+<meta name="color-scheme" content="dark">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="description" content="VOID LANCER — a single-file 3D space shooter built with Three.js. Everything procedural, no assets.">
+<title>VOID LANCER — Deep Space Interceptor</title>
+<!-- Empty favicon keeps the console clean (no 404 request) -->
+<link rel="icon" href="data:,">
+<style>
+/* ============================================================================
+   VOID LANCER — HUD / UI STYLESHEET
+   All UI is DOM-overlay based (kept out of the WebGL canvas on purpose):
+   cheap to update, easy to restyle, zero extra draw calls.
+   Palette:  cyan #5fe8ff | amber #ffc857 | warn #ff5a3c | good #58ff9b
+============================================================================ */
+:root{
+  --c1:#5fe8ff; --c1-dim:rgba(95,232,255,.28); --c1-faint:rgba(95,232,255,.10);
+  --c2:#9db4c8; --warn:#ff5a3c; --gold:#ffc857; --good:#58ff9b; --bad:#ff4d6a;
+  --panel:rgba(7,13,20,.62);
+  --mono:"Consolas","Menlo","SF Mono","DejaVu Sans Mono","Courier New",monospace;
+}
+*{margin:0;padding:0;box-sizing:border-box}
+html,body{width:100%;height:100%;overflow:hidden;background:#02030a;overscroll-behavior:none;
+  -webkit-text-size-adjust:100%;touch-action:none}
+body{font-family:var(--mono);color:var(--c2);-webkit-user-select:none;user-select:none;
+  -webkit-touch-callout:none}
+#app{position:fixed;inset:0}
+#app > canvas{position:absolute;inset:0;display:block;touch-action:none}
+#app.hovermode canvas{cursor:crosshair}
+.hidden{display:none!important}
+
+/* ---------- generic HUD bits ---------- */
+#hud{position:absolute;inset:0;pointer-events:none;overflow:hidden;z-index:10;}
+/* shared utility classes: text glow, keycap chip */
+.glow{text-shadow:0 0 8px rgba(95,232,255,.75)}
+.k{display:inline-block;border:1px solid #3a4a5a;padding:1px 7px;border-radius:3px;
+  background:#10151d;color:#bfe6ff;font-size:11px;margin:0 2px}
+
+/* subtle CRT scanlines over everything (cheap "cockpit glass" feel) */
+#scanlines{position:absolute;inset:0;pointer-events:none;opacity:.05;
+  background:repeating-linear-gradient(0deg,#000 0 1px,transparent 1px 3px)}
+
+/* ---------- damage / pickup vignettes ---------- */
+#vig-red,#vig-blue,#flash-white{position:absolute;inset:0;pointer-events:none;opacity:0}
+#vig-red{background:radial-gradient(ellipse at center,transparent 52%,rgba(255,25,15,.55)100%)}
+#vig-blue{background:radial-gradient(ellipse at center,transparent 58%,rgba(60,160,255,.5)100%)}
+#flash-white{background:radial-gradient(ellipse at center,rgba(255,255,255,.9),rgba(255,255,255,.2)70%)}
+
+/* ---------- top-left : ship status ---------- */
+#hud-tl{position:absolute;top:18px;left:18px;width:270px}
+.bar-label{font-size:10px;letter-spacing:3px;color:var(--c2);margin-bottom:2px;
+  display:flex;justify-content:space-between}
+.bar{height:9px;background:rgba(20,30,40,.75);border:1px solid var(--c1-dim);
+  transform:skewX(-14deg);margin-bottom:8px;overflow:hidden}
+.bar .fill{height:100%;width:100%;transition:width .12s linear}
+#bar-shield-fill{background:linear-gradient(90deg,#1f7fae,#37c8ff)}
+#bar-hull-fill{background:linear-gradient(90deg,#2fae4f,#58ff9b)}
+#bar-boost-fill{background:linear-gradient(90deg,#8a6a1f,#ffc857)}
+.bar.thin{height:5px}
+/* shield segmentation ticks */
+.bar .ticks{position:absolute;inset:0;background:repeating-linear-gradient(90deg,
+  transparent 0 24px,rgba(0,0,0,.5) 24px 26px)}
+#obj-wrap{margin-top:4px;font-size:11px}
+#objective{border-left:2px solid var(--gold);padding:4px 8px;background:rgba(30,24,6,.5)}
+#obj-text{color:var(--gold);letter-spacing:1px}
+#obj-bar{height:5px;background:rgba(40,40,20,.7);margin-top:4px;border:1px solid rgba(255,200,87,.3)}
+#obj-fill{height:100%;width:100%;background:var(--gold)}
+#obj-timer{font-size:16px;color:var(--gold);text-align:center;margin-top:2px;letter-spacing:4px}
+
+/* ---------- top-right : score ---------- */
+#hud-tr{position:absolute;top:18px;right:18px;text-align:right}
+#hud-tr .row{margin-bottom:6px}
+#hud-tr .lbl{font-size:10px;letter-spacing:3px;color:var(--c2)}
+#score-val{font-size:26px;color:#dff6ff;letter-spacing:2px;text-shadow:0 0 12px rgba(95,232,255,.6)}
+#combo-wrap{display:inline-block}
+#combo-val{font-size:15px;color:var(--gold);letter-spacing:1px}
+#combo-bar{height:3px;width:90px;background:rgba(50,40,10,.7);display:inline-block;vertical-align:middle}
+#combo-fill{height:100%;width:0%;background:var(--gold)}
+#wave-val{font-size:15px;color:#dff6ff;letter-spacing:2px}
+#best-val{font-size:10px;color:var(--c2)}
+#combo-val.pop{animation:pop .18s ease-out}
+@keyframes pop{0%{transform:scale(1.6)}100%{transform:scale(1)}}
+#combo-val.lost{color:var(--bad);animation:none}
+
+/* ---------- top-center : boss bar / alerts / banner ---------- */
+#hud-tc{position:absolute;top:14px;left:50%;transform:translateX(-50%);text-align:center;width:640px}
+#alert-line{font-size:13px;letter-spacing:4px;color:var(--warn);text-shadow:0 0 10px rgba(255,90,60,.8);
+  min-height:18px}
+#boss-bar{margin-top:6px}
+#boss-name{font-size:12px;letter-spacing:6px;color:#e6c6ff;text-shadow:0 0 10px rgba(190,90,255,.8)}
+#boss-track{height:11px;background:rgba(30,16,40,.7);border:1px solid rgba(190,90,255,.5);
+  transform:skewX(-14deg);margin-top:3px;position:relative;overflow:hidden}
+#boss-fill{height:100%;width:100%;background:linear-gradient(90deg,#7a2fae,#c060ff)}
+#boss-phase{position:absolute;inset:0;background:repeating-linear-gradient(90deg,
+  transparent 0 31.5%,rgba(0,0,0,.55) 31.5% 33%)}
+#wp-pips{display:flex;justify-content:center;gap:8px;margin-top:4px}
+#wp-pips .pip{width:26px;height:6px;background:#c060ff;transform:skewX(-14deg)}
+#wp-pips .pip.dead{background:rgba(80,50,90,.4)}
+#banner{position:absolute;top:24%;left:0;width:100%;text-align:center;opacity:0;pointer-events:none}
+#banner.show{animation:bannerIn 3s ease-out forwards}
+#banner-main{font-size:42px;letter-spacing:16px;color:#dff4ff;
+  text-shadow:0 0 22px rgba(95,232,255,.9),0 0 60px rgba(95,232,255,.4)}
+#banner-sub{font-size:14px;letter-spacing:6px;color:var(--c2);margin-top:8px}
+#banner.gold #banner-main{color:#ffe9c0;text-shadow:0 0 22px rgba(255,200,87,.9)}
+#banner.bad #banner-main{color:#ffd9d2;text-shadow:0 0 22px rgba(255,80,60,.9)}
+@keyframes bannerIn{0%{opacity:0;transform:scale(1.18)}12%{opacity:1;transform:scale(1)}
+  72%{opacity:1}100%{opacity:0;transform:scale(.98)}}
+
+/* ---------- center : crosshair / reticle / lock / charge ---------- */
+#crosshair{position:absolute;left:50%;top:50%;width:26px;height:26px;
+  transform:translate(-50%,-50%);pointer-events:none;opacity:.9}
+#crosshair::before,#crosshair::after{content:"";position:absolute;background:var(--c1);
+  box-shadow:0 0 6px rgba(95,232,255,.8)}
+#crosshair::before{left:50%;top:0;width:1px;height:100%;transform:translateX(-50%);opacity:.45}
+#crosshair::after{top:50%;left:0;height:1px;width:100%;transform:translateY(-50%);opacity:.45}
+#reticle{position:absolute;left:0;top:0;width:34px;height:34px;border:1.5px solid var(--c1);
+  border-radius:50%;pointer-events:none;box-shadow:0 0 10px rgba(95,232,255,.35),inset 0 0 8px rgba(95,232,255,.2);
+  transition:border-color .1s}
+#reticle::after{content:"";position:absolute;left:50%;top:50%;width:3px;height:3px;
+  background:var(--c1);border-radius:50%;transform:translate(-50%,-50%)}
+#reticle .aim-line{position:absolute;left:50%;top:100%;width:1px;height:20px;
+  background:linear-gradient(180deg,var(--c1),transparent);
+  box-shadow:0 0 4px rgba(95,232,255,.6);transform:translateX(-.5px)}
+#reticle .aim-tick{position:absolute;left:50%;top:calc(100% + 20px);width:9px;height:1px;
+  background:var(--c1);box-shadow:0 0 4px rgba(95,232,255,.6);transform:translateX(-4.5px);opacity:.7}
+#reticle .aim-dot{position:absolute;left:50%;top:50%;width:2px;height:2px;border-radius:50%;
+  background:#eafaff;box-shadow:0 0 5px rgba(95,232,255,.9);transform:translate(-50%,-50%)}
+#reticle.hot{border-color:var(--warn)}
+#reticle.locked{border-color:var(--gold);animation:lockpulse .5s infinite alternate}
+@keyframes lockpulse{from{box-shadow:0 0 8px rgba(255,200,87,.4)}to{box-shadow:0 0 18px rgba(255,200,87,.9)}}
+#charge-ring{position:absolute;left:0;top:0;width:72px;height:72px;border-radius:50%;
+  pointer-events:none;-webkit-mask:radial-gradient(circle,transparent 60%,#000 62%);
+  mask:radial-gradient(circle,transparent 60%,#000 62%);display:none}
+#lockbox{position:absolute;left:0;top:0;width:64px;height:64px;pointer-events:none;display:none}
+#lockbox span{position:absolute;width:14px;height:14px;border:2px solid var(--gold)}
+#lockbox span:nth-child(1){left:0;top:0;border-right:none;border-bottom:none}
+#lockbox span:nth-child(2){right:0;top:0;border-left:none;border-bottom:none}
+#lockbox span:nth-child(3){left:0;bottom:0;border-right:none;border-top:none}
+#lockbox span:nth-child(4){right:0;bottom:0;border-left:none;border-top:none}
+#lockbox.locked span{border-color:var(--warn);box-shadow:0 0 8px rgba(255,90,60,.6)}
+#lock-info{position:absolute;left:50%;top:100%;transform:translateX(-50%);margin-top:6px;
+  text-align:center;white-space:nowrap}
+#lock-name{font-size:10px;letter-spacing:2px;color:#ffd9a0}
+#lock-hp{width:64px;height:3px;background:rgba(60,30,20,.7);margin:2px auto 0}
+#lock-fill{height:100%;width:100%;background:var(--warn)}
+
+/* ---------- bottom-left : weapons ---------- */
+#hud-bl{position:absolute;bottom:18px;left:18px;display:flex;gap:8px;align-items:flex-end}
+.slot{width:150px;padding:6px 9px;background:var(--panel);border:1px solid rgba(60,74,90,.6)}
+.slot .slot-key{font-size:9px;color:var(--c2);letter-spacing:2px}
+.slot .slot-name{font-size:12px;color:#bfe0ef;letter-spacing:1px;margin:1px 0}
+.slot .slot-sub{font-size:10px;color:var(--c2)}
+.slot.active{border-color:var(--c1);box-shadow:0 0 14px rgba(95,232,255,.25);
+  background:rgba(14,32,44,.72)}
+.slot.active .slot-name{color:var(--c1)}
+#overdrive-chip{position:absolute;bottom:64px;left:18px;padding:4px 10px;font-size:11px;
+  letter-spacing:3px;color:#ffb0ff;border:1px solid rgba(255,120,255,.5);
+  background:rgba(40,10,40,.6);display:none}
+
+/* skill chips + multi-lock tag markers — stacked above the 9-slot battery
+   strip (which reaches screen center) so chips never overlap the weapons */
+#skill-row{position:absolute;bottom:96px;left:50%;transform:translateX(-50%);
+  display:flex;gap:10px}
+.skill-chip{width:46px;height:46px;position:relative;border:1px solid var(--c1-dim);
+  background:var(--panel);overflow:hidden}
+.skill-chip .sk-fill{position:absolute;bottom:0;left:0;right:0;height:100%;
+  background:rgba(95,232,255,.16);display:flex;align-items:flex-end;justify-content:center;
+  padding-bottom:3px;font-size:9px;color:var(--c1);letter-spacing:1px}
+.skill-chip .sk-key{position:absolute;top:3px;left:0;right:0;text-align:center;
+  font-size:8px;letter-spacing:2px;color:var(--c2)}
+.skill-chip.cd{border-color:rgba(255,170,80,.5)}
+.skill-chip.cd .sk-fill{background:rgba(255,170,80,.14);color:#ffb46a}
+.skill-chip.ready{border-color:var(--good);box-shadow:0 0 10px rgba(88,255,155,.25)}
+.skill-chip.ready .sk-fill{color:var(--good)}
+.skill-chip.locked{opacity:.32;border-color:rgba(90,100,110,.5)}
+.skill-chip.locked .sk-fill{color:#5a6a78}
+#lock-tags{position:absolute;inset:0;pointer-events:none}
+.tagbox{position:absolute;width:34px;height:34px;pointer-events:none;transform-origin:0 0}
+.tagbox span{position:absolute;inset:0;border:1.5px solid var(--gold);
+  box-shadow:0 0 8px rgba(255,200,87,.5)}
+.tagbox span::before{content:"";position:absolute;inset:30%;border-radius:50%;
+  background:var(--gold);opacity:.8}
+
+/* ---------- map-refit CHOICE screen ---------- */
+#screen-upgrade .upg-note{margin-top:8px;font-size:11px;letter-spacing:3px;color:var(--gold)}
+#upg-row{display:flex;gap:16px;margin-top:26px}
+.upg-btn{width:230px;padding:18px 16px;font-family:var(--mono);text-align:left;cursor:pointer;
+  background:rgba(14,26,40,.72);border:1px solid var(--c1-dim);color:#dff6ff;
+  transition:border-color .12s, box-shadow .12s, transform .12s}
+.upg-btn:hover{border-color:var(--c1);box-shadow:0 0 24px rgba(95,232,255,.3);transform:translateY(-3px)}
+.upg-btn .upg-cat{font-size:9px;letter-spacing:3px;margin-bottom:8px}
+.upg-btn .upg-name{font-size:15px;letter-spacing:2px;color:var(--c1)}
+.upg-btn:hover .upg-name{color:#eaf9ff}
+.upg-btn .upg-desc{font-size:11px;line-height:1.7;color:#bfe0ef;margin-top:8px;letter-spacing:.5px}
+.upg-btn .upg-vis{font-size:8.5px;letter-spacing:1.5px;color:var(--c2);margin-top:12px;
+  border-top:1px solid rgba(95,232,255,.15);padding-top:8px}
+
+/* ---------- bottom-right : radar ---------- */
+#radar-wrap{position:absolute;bottom:18px;right:18px;text-align:center}
+#radar-label{font-size:9px;letter-spacing:4px;color:var(--c2);margin-top:3px}
+#radar{display:block;border-radius:50%;border:1px solid var(--c1-dim);
+  box-shadow:0 0 24px rgba(95,232,255,.08),inset 0 0 30px rgba(95,232,255,.05)}
+
+/* ---------- hitmarker (shot-connect feedback) ---------- */
+#hitmarker{position:absolute;left:50%;top:50%;width:26px;height:26px;margin:-13px 0 0 -13px;
+  pointer-events:none;opacity:0;transform:rotate(45deg) scale(0.7)}
+#hitmarker span{position:absolute;background:#dff6ff;box-shadow:0 0 6px rgba(95,232,255,.9)}
+#hitmarker span:nth-child(1){left:0;top:0;width:7px;height:2px}
+#hitmarker span:nth-child(2){right:0;top:0;width:2px;height:7px}
+#hitmarker span:nth-child(3){left:0;bottom:0;width:2px;height:7px}
+#hitmarker span:nth-child(4){right:0;bottom:0;width:7px;height:2px}
+#hitmarker.kill span{background:var(--gold);box-shadow:0 0 8px rgba(255,200,87,.9)}
+#hitmarker.show{animation:hitPop .22s ease-out}
+@keyframes hitPop{0%{opacity:1;transform:rotate(45deg) scale(1.25)}
+  100%{opacity:0;transform:rotate(45deg) scale(0.8)}}
+
+/* ---------- score popups & offscreen indicators ---------- */
+#popups,#indicators{position:absolute;inset:0;pointer-events:none}
+.popup{position:absolute;font-size:13px;color:#c9f8ff;text-shadow:0 0 8px rgba(95,232,255,.8);
+  letter-spacing:1px;opacity:0;transform:translate(-50%,-50%)}
+.popup.gold{color:#ffe9b0;text-shadow:0 0 8px rgba(255,200,87,.9)}
+.popup.bad{color:#ffb3a6;text-shadow:0 0 8px rgba(255,80,60,.8)}
+.popup.go{animation:popRise .95s ease-out forwards}
+@keyframes popRise{0%{opacity:0;transform:translate(-50%,-50%) scale(.7)}
+  15%{opacity:1;transform:translate(-50%,-60%) scale(1.15)}
+  100%{opacity:0;transform:translate(-50%,-160%) scale(1)}}
+.ind{position:absolute;width:0;height:0;pointer-events:none}
+.ind .arrow{width:0;height:0;border-left:8px solid transparent;border-right:8px solid transparent;
+  border-bottom:14px solid var(--gold);position:absolute;left:-8px;top:-7px}
+.ind .tag{position:absolute;top:10px;left:-40px;width:80px;text-align:center;font-size:9px;
+  letter-spacing:2px;color:var(--gold);text-shadow:0 0 6px rgba(255,200,87,.8)}
+.ind.boss .arrow{border-bottom-color:#c060ff}
+.ind.boss .tag{color:#d9a8ff;text-shadow:0 0 6px rgba(190,90,255,.8)}
+.ind.ally .arrow{border-bottom-color:var(--good)}
+.ind.ally .tag{color:var(--good)}
+
+/* ---------- dev stats ---------- */
+#stats-panel{position:absolute;bottom:18px;left:50%;transform:translateX(-50%);
+  font-size:10px;color:#7fa8c0;background:rgba(5,10,16,.8);border:1px solid var(--c1-dim);
+  padding:6px 12px;letter-spacing:1px;white-space:pre;display:none;max-width:92vw}
+
+/* ---------- on-screen touch pause (shown only when G.input.touch) ---------- */
+#btn-touch-pause{position:absolute;top:max(8px,env(safe-area-inset-top));right:max(8px,env(safe-area-inset-right));
+  z-index:18;width:44px;height:44px;font-family:var(--mono);font-size:16px;letter-spacing:2px;
+  color:#dff6ff;background:rgba(7,13,20,.55);border:1px solid var(--c1-dim);border-radius:6px;
+  pointer-events:auto;display:none;touch-action:manipulation}
+
+/* ---------- full screens (start / pause / over / error) ---------- */
+.screen{position:absolute;inset:0;display:flex;align-items:center;justify-content:flex-start;
+  flex-direction:column;background:radial-gradient(ellipse at center,rgba(4,8,14,.55),rgba(2,3,8,.92));
+  pointer-events:auto;text-align:center;z-index:20;
+  overflow-y:auto;-webkit-overflow-scrolling:touch;touch-action:pan-y;
+  padding:env(safe-area-inset-top) 14px max(16px,env(safe-area-inset-bottom))}
+/* centered while the content fits; the auto margins collapse to 0 once it
+   overflows, so a tall screen starts at the top and scrolls instead of clipping */
+.screen::before,.screen::after{content:"";flex:0 0 auto;margin:auto 0}
+.screen>*{flex:none}
+.screen .title{font-size:62px;letter-spacing:22px;color:#eaf9ff;font-weight:400;
+  text-shadow:0 0 30px rgba(95,232,255,.9),0 0 90px rgba(95,232,255,.35)}
+.screen .subtitle{font-size:13px;letter-spacing:9px;color:var(--c1);margin-top:10px}
+.screen .blurb{font-size:12px;color:var(--c2);margin-top:22px;max-width:560px;line-height:1.8;letter-spacing:1px}
+.controls{display:grid;grid-template-columns:auto auto;gap:7px 26px;margin-top:26px;
+  font-size:11px;color:var(--c2);text-align:left;letter-spacing:1px}
+.controls div:nth-child(odd){text-align:right;color:#bfe6ff}
+.blink{animation:blinkA 1.4s infinite}
+@keyframes blinkA{0%,100%{opacity:1}50%{opacity:.25}}
+#start-cta{margin-top:34px;font-size:16px;letter-spacing:8px;color:#dff6ff}
+#start-best{margin-top:14px;font-size:11px;color:var(--c2);letter-spacing:2px}
+#screen-over .title{color:#ffd9d2;text-shadow:0 0 30px rgba(255,80,60,.9),0 0 90px rgba(255,80,60,.3)}
+#over-stats{margin-top:24px;font-size:13px;line-height:2;letter-spacing:2px;color:var(--c2)}
+#over-stats b{color:#dff6ff;font-weight:400}
+.btn{margin-top:28px;padding:11px 40px;font-family:var(--mono);font-size:14px;letter-spacing:6px;
+  color:#dff6ff;background:rgba(20,40,60,.55);border:1px solid var(--c1);cursor:pointer}
+.btn:hover{background:rgba(40,90,120,.7);box-shadow:0 0 22px rgba(95,232,255,.4)}
+#screen-error .title{font-size:30px;color:#ffb3a6;letter-spacing:8px;
+  text-shadow:0 0 20px rgba(255,80,60,.8)}
+#error-msg{margin-top:18px;font-size:12px;color:var(--c2);max-width:520px;line-height:1.7}
+#hint-line{position:absolute;bottom:8px;left:0;width:100%;text-align:center;font-size:9px;
+  letter-spacing:3px;color:rgba(157,180,200,.4);pointer-events:none}
+
+/* ============================================================================
+   CAMPAIGN EXPANSION UI — mode select / cockpit HUD / dev console / fades
+============================================================================ */
+
+/* ---------- mode select (start screen) ---------- */
+#mode-row{display:flex;gap:18px;margin-top:26px}
+.mode-btn{width:262px;padding:15px 18px;font-family:var(--mono);text-align:left;cursor:pointer;
+  background:rgba(16,30,44,.55);border:1px solid var(--c1-dim);color:#dff6ff}
+.mode-btn:hover{background:rgba(40,90,120,.7);border-color:var(--c1);
+  box-shadow:0 0 22px rgba(95,232,255,.35)}
+.mode-btn .mode-name{font-size:17px;letter-spacing:6px;color:var(--c1)}
+.mode-btn:hover .mode-name{color:#eaf9ff}
+.mode-btn .mode-desc{font-size:10px;line-height:1.7;color:var(--c2);margin-top:8px;letter-spacing:.5px}
+.mode-btn.adventure .mode-name{color:var(--gold)}
+.mode-btn.adventure{border-color:rgba(255,200,87,.35)}
+.mode-btn.adventure:hover{background:rgba(90,70,20,.55);border-color:var(--gold);
+  box-shadow:0 0 22px rgba(255,200,87,.3)}
+
+/* ---------- ship picker (start screen) ---------- */
+#ship-label{margin-top:24px;font-size:10px;letter-spacing:5px;color:var(--c2)}
+#ship-row{display:flex;gap:14px;margin-top:10px}
+.ship-btn{width:196px;padding:10px 14px;font-family:var(--mono);text-align:left;cursor:pointer;
+  background:rgba(16,30,44,.4);border:1px solid rgba(60,74,90,.6);color:#bfe0ef}
+.ship-btn:hover{border-color:var(--c1);background:rgba(40,90,120,.55)}
+.ship-btn.sel{border-color:var(--c1);background:rgba(14,32,44,.72);
+  box-shadow:0 0 16px rgba(95,232,255,.25)}
+.ship-btn.sel .ship-name{color:var(--c1)}
+.ship-btn .ship-name{font-size:12.5px;letter-spacing:2px;color:#dff6ff}
+.ship-btn .ship-role{font-size:9px;letter-spacing:1.5px;color:var(--c2);margin-top:4px}
+.ship-btn .ship-stats{font-size:9px;color:#7fa8c0;margin-top:5px;letter-spacing:.5px}
+
+/* ---------- phase-cut fade overlay ---------- */
+#fade{position:absolute;inset:0;background:#000;opacity:0;pointer-events:none;
+  transition:opacity .42s ease;z-index:40}
+#fade.on{opacity:1}
+
+/* ---------- cockpit (first-person) HUD layout ----------
+   When the rig is in fp/turret mode the readouts stop floating full-screen
+   and sit inside the cockpit frame: status gauges become a clipped side
+   panel, weapons a bottom-center instrument strip, the radar a small scope.
+   Panels deliberately keep clear of the screen edges where the 3D canopy
+   struts live, so the DOM reticle never has to fight hull geometry. */
+#hud.fp #hud-tl{top:auto;left:24px;bottom:186px;width:198px;background:var(--panel);
+  border:1px solid var(--c1-dim);padding:10px 12px;backdrop-filter:blur(2px);
+  clip-path:polygon(0 0,100% 0,100% calc(100% - 14px),calc(100% - 14px) 100%,0 100%)}
+#hud.fp #hud-tr{top:12px;right:24px}
+#hud.fp #radar-wrap{bottom:16px;right:22px}
+#hud.fp #radar{width:150px!important;height:150px!important}
+#hud.fp #radar-label{font-size:8px;margin-top:2px}
+#hud.fp #hud-bl{left:50%;transform:translateX(-50%);bottom:16px;gap:6px}
+/* in cockpit layout the skill chips stack above the instrument strip
+   so neither fights for the bottom-center band */
+#hud.fp #skill-row{bottom:112px}
+/* the smaller trailing battery slots ([5]–[9]) get slimmed variants */
+#hud-bl .slot.slot-sm{width:112px}
+#hud-bl .slot.slot-sm .slot-name{font-size:10.5px}
+#hud.fp .slot{width:116px;padding:4px 8px}
+#hud.fp .slot.slot-sm{width:96px}
+#hud.fp .slot .slot-name{font-size:11px}
+#hud.fp #overdrive-chip{bottom:98px;left:50%;transform:translateX(-50%)}
+#hud.fp #crosshair{opacity:.55}
+#hud.fp #stats-panel{bottom:190px}
+
+/* ---------- cheat / dev console (hidden until unlocked) ---------- */
+#cheat-panel{position:absolute;top:50%;left:18px;transform:translateY(-50%);z-index:30;
+  width:216px;background:rgba(5,10,16,.93);border:1px solid rgba(255,200,87,.4);
+  font-size:10px;letter-spacing:1px;color:#c9d8e4;pointer-events:auto}
+#cheat-panel .cp-head{display:flex;justify-content:space-between;padding:6px 10px;
+  color:var(--gold);border-bottom:1px solid rgba(255,200,87,.25);letter-spacing:2px}
+#cheat-panel .cp-close{cursor:pointer;color:#8899aa;padding:0 4px}
+#cheat-panel .cp-close:hover{color:#fff}
+#cheat-panel .cp-btns{display:flex;flex-wrap:wrap;gap:4px;padding:8px}
+#cheat-panel button{font-family:var(--mono);font-size:9px;letter-spacing:1px;color:#dff6ff;
+  background:rgba(20,40,60,.6);border:1px solid #3a4a5a;padding:4px 8px;cursor:pointer;flex:1 1 auto}
+#cheat-panel button:hover{border-color:var(--gold)}
+#cheat-panel button.on{background:rgba(80,60,10,.75);border-color:var(--gold);color:var(--gold)}
+#cheat-panel .cp-spawn{display:flex;gap:4px;padding:0 8px 8px;align-items:center;flex-wrap:wrap}
+#cheat-panel .cp-spawn span{color:#7fa8c0;letter-spacing:2px;width:100%}
+#cheat-panel .cp-foot{padding:5px 10px 7px;color:#5f7484;font-size:8px;letter-spacing:1.5px;
+  border-top:1px solid rgba(95,232,255,.12)}
+
+/* ============================================================================
+   DEPTH / BREADTH / RESPONSIVE UX UI LAYER
+   Fluid HUD scaling (--hs JS-driven + manual slider), compact reflow,
+   safe-area insets, chassis/shop/stats/settings screens, comms & radio
+   layers, tutorial prompts, photo mode, wreck hold, nemesis/elite tags.
+============================================================================ */
+
+/* ---------- fluid HUD scale (auto breakpoint × manual slider) ---------- */
+#hud-tl{transform:scale(var(--hs,1));transform-origin:top left;
+  top:max(18px,env(safe-area-inset-top));left:max(18px,env(safe-area-inset-left))}
+#hud-tr{transform:scale(var(--hs,1));transform-origin:top right;
+  top:max(18px,env(safe-area-inset-top));right:max(18px,env(safe-area-inset-right))}
+#hud-bl{transform:scale(var(--hs,1));transform-origin:bottom left;
+  bottom:max(18px,env(safe-area-inset-bottom));left:max(18px,env(safe-area-inset-left))}
+#hud.fp #hud-bl{transform:translateX(-50%) scale(var(--hs,1));transform-origin:bottom center}
+#radar-wrap{transform:scale(var(--hs,1));transform-origin:bottom right;
+  bottom:max(18px,env(safe-area-inset-bottom));right:max(18px,env(safe-area-inset-right))}
+#skill-row{transform:translateX(-50%) scale(var(--hs,1));transform-origin:bottom center}
+#overdrive-chip{transform:scale(var(--hs,1));transform-origin:bottom left}
+#hud-tc{width:min(640px,92vw)}
+
+/* ---------- compact reflow (narrow / short viewports) ---------- */
+@media (max-width:1100px){
+  .slot{width:118px;padding:5px 7px}
+  .slot.slot-sm{width:92px}
+  #hud.fp .slot{width:96px}
+  .screen .title{font-size:44px;letter-spacing:14px}
+  #banner-main{font-size:30px;letter-spacing:10px}
+}
+@media (max-width:900px){
+  /* reflow secondary HUD into a stacked/compact arrangement instead of
+     shrinking everything to unreadable */
+  #hud-tr .row{display:inline-block;margin:0 0 4px 12px}
+  #score-val{font-size:19px}
+  #hud-bl{gap:5px}
+  .slot{width:86px}
+  .slot .slot-name{font-size:10px}
+  .slot.slot-sm{width:72px}
+  .slot .slot-sub{display:none}
+  #radar{width:150px!important;height:150px!important}
+  /* the cockpit battery is wider than the chase one — slim it and let it wrap
+     so the strip can never run past the screen edges below ~1000px */
+  #hud.fp .slot{width:96px}
+  #hud.fp .slot.slot-sm{width:78px}
+  #hud.fp #hud-bl{flex-wrap:wrap;justify-content:center;width:min(94vw,470px);max-width:min(94vw,470px)}
+  .controls{display:none}
+  .screen .blurb{max-width:92vw;font-size:11px}
+}
+@media (max-width:760px){
+  /* chase-view battery needs the same wrap once nine slots can't fit one row */
+  #hud-bl{flex-wrap:wrap;justify-content:center;max-width:min(94vw,470px)}
+}
+
+/* ---------- phones / tablets (portrait or landscape) ---------- */
+@media (pointer:coarse), (max-width:560px), (max-height:480px){
+  /* the 9-slot battery wraps into two rows inside the bottom band */
+  #hud-bl{flex-wrap:wrap;justify-content:center;max-width:min(94vw,470px);row-gap:4px}
+  /* core weapons get readable slots; the slim ones ride the second row */
+  .slot{width:96px}
+  .slot .slot-name{font-size:9.5px}
+  .slot.slot-sm{width:66px}
+  /* cockpit layout keeps its wider slots — slim them to fit the same band */
+  #hud.fp .slot{width:84px;padding:3px 6px}
+  #hud.fp .slot .slot-name{font-size:9px}
+  #hud.fp .slot.slot-sm{width:64px}
+  /* explicit band width: left:50% shrink-to-fit would cap it at half the viewport */
+  #hud.fp #hud-bl{flex-wrap:wrap;justify-content:center;width:min(94vw,470px);max-width:min(94vw,470px)}
+  /* skill chips ride above the (now two-row) battery */
+  #skill-row{bottom:170px}
+  /* radar drops to a compact scope; top-left readouts shrink a step */
+  #radar{width:118px!important;height:118px!important}
+  #hud-tl{width:200px}
+  #banner-main{font-size:26px;letter-spacing:8px}
+  #hud-tc{width:88vw}
+  /* cockpit layout: status panel stacks above the chips, not beside them */
+  #hud.fp #hud-tl{bottom:230px;width:172px}
+  #hud.fp #skill-row{bottom:140px}
+  #hud.fp #overdrive-chip{bottom:118px}
+}
+@media (max-height:420px){
+  /* short landscape phones: tuck the radar almost out of sight */
+  #radar-wrap{bottom:4px;right:6px;transform:scale(.72);transform-origin:bottom right}
+  #skill-row{bottom:112px}
+  #hud-tl{width:170px}
+  #hud.fp #hud-tl{bottom:186px}
+}
+@media (max-width:820px), (max-height:640px){
+  .screen .title{font-size:32px;letter-spacing:8px;margin-top:6px}
+  .screen .subtitle{font-size:10px;letter-spacing:4px}
+  #start-cta{margin-top:16px;font-size:13px}
+  #mode-row,#ship-row,#diff-row,#mod-row,.util-row{flex-direction:column;align-items:center;
+    gap:10px;margin-top:14px;max-height:38vh;overflow-y:auto;padding:4px}
+  .mode-btn,.ship-btn,.diff-btn{width:min(92vw,340px)}
+  #upg-row{flex-direction:column;align-items:center;gap:10px;max-height:52vh;overflow-y:auto}
+  .upg-btn{width:min(92vw,340px);padding:12px}
+  .panel-cols{flex-direction:column;align-items:center}
+  #settings-list{max-height:60vh;overflow-y:auto;-webkit-overflow-scrolling:touch;touch-action:pan-y}
+  .title{margin-bottom:4px}
+  #over-stats{font-size:11px;line-height:1.7;margin-top:12px}
+  .btn{margin-top:14px;padding:9px 26px;font-size:12px}
+}
+@media (orientation:portrait) and (max-width:700px){
+  .screen .blurb::after{content:" — ROTATE TO LANDSCAPE FOR BEST VIEW"}
+}
+
+/* ---------- chassis select ---------- */
+#ship-label{margin-top:18px}
+#ship-row .ship-btn .ship-stats{color:#8fd4e8}
+
+/* difficulty row */
+#diff-label{margin-top:16px;font-size:10px;letter-spacing:5px;color:var(--c2)}
+#diff-row{display:flex;gap:12px;margin-top:8px;justify-content:center}
+.diff-btn{padding:8px 20px;font-family:var(--mono);cursor:pointer;text-align:center;
+  background:rgba(16,30,44,.4);border:1px solid rgba(60,74,90,.6);color:#bfe0ef}
+.diff-btn:hover{border-color:var(--c1)}
+.diff-btn.sel{border-color:var(--gold);background:rgba(60,48,14,.5);
+  box-shadow:0 0 14px rgba(255,200,87,.25)}
+.diff-btn .d-name{font-size:13px;letter-spacing:3px;color:#dff6ff}
+.diff-btn.sel .d-name{color:var(--gold)}
+.diff-btn .d-desc{font-size:9px;color:var(--c2);margin-top:3px;letter-spacing:1px}
+
+/* modifier toggles */
+#mod-label{margin-top:14px;font-size:10px;letter-spacing:5px;color:var(--c2)}
+#mod-row{display:flex;gap:8px;margin-top:8px;justify-content:center;flex-wrap:wrap;max-width:860px}
+.mod-btn{padding:6px 12px;font-family:var(--mono);font-size:10px;letter-spacing:1px;cursor:pointer;
+  background:rgba(20,16,24,.5);border:1px solid rgba(90,70,90,.5);color:#9a8aa0}
+.mod-btn:hover{border-color:var(--warn)}
+.mod-btn.on{border-color:var(--warn);color:#ffb3a6;background:rgba(70,24,16,.55);
+  box-shadow:0 0 12px rgba(255,90,60,.3)}
+.mod-btn .m-mult{color:var(--gold);margin-left:6px}
+
+/* ---------- utility button row (shop / stats / settings / NG+) ---------- */
+.util-row{display:flex;gap:10px;margin-top:16px;justify-content:center;flex-wrap:wrap}
+.util-btn{padding:7px 16px;font-family:var(--mono);font-size:11px;letter-spacing:3px;cursor:pointer;
+  background:rgba(12,22,34,.55);border:1px solid rgba(60,74,90,.6);color:#9db4c8}
+.util-btn:hover{border-color:var(--c1);color:#dff6ff}
+.util-btn.on{border-color:var(--gold);color:var(--gold)}
+.util-btn .credit{color:var(--gold);margin-left:8px}
+
+/* shop screen */
+#screen-shop .panel-cols{display:flex;gap:26px;margin-top:18px;max-width:960px;
+  justify-content:center;flex-wrap:wrap;text-align:left}
+.shop-col{min-width:260px;max-width:420px}
+.shop-col h3{font-size:12px;letter-spacing:4px;color:var(--c1);margin-bottom:8px;font-weight:400}
+.shop-item{display:flex;justify-content:space-between;gap:10px;align-items:center;
+  padding:8px 10px;margin-bottom:6px;background:rgba(14,26,40,.6);
+  border:1px solid rgba(60,74,90,.5);font-size:11px;cursor:pointer}
+.shop-item:hover{border-color:var(--c1)}
+.shop-item.owned{border-color:rgba(88,255,155,.4);cursor:default}
+.shop-item.equipped{border-color:var(--gold);background:rgba(60,48,14,.35)}
+.shop-item .si-name{color:#dff6ff;letter-spacing:1px}
+.shop-item .si-desc{color:var(--c2);font-size:9.5px;margin-top:3px;line-height:1.5}
+.shop-item .si-cost{color:var(--gold);white-space:nowrap;font-size:11px}
+.shop-item.owned .si-cost{color:var(--good)}
+.livery-swatch{width:26px;height:14px;border:1px solid rgba(255,255,255,.25);display:inline-block;
+  vertical-align:middle;margin-right:8px}
+#shop-credits{font-size:13px;letter-spacing:3px;color:var(--gold);margin-top:6px}
+
+/* stats screen */
+#stats-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));
+  gap:10px 26px;margin-top:20px;max-width:760px;text-align:left;font-size:12px;letter-spacing:1px}
+#stats-grid .st-row{display:flex;justify-content:space-between;border-bottom:1px dashed rgba(95,232,255,.15);
+  padding:5px 2px}
+#stats-grid .st-row span:first-child{color:var(--c2)}
+#stats-grid .st-row span:last-child{color:#dff6ff}
+
+/* settings screen */
+#settings-list{margin-top:18px;text-align:left;width:min(480px,92vw);font-size:12px}
+.set-row{display:flex;align-items:center;justify-content:space-between;gap:14px;
+  padding:9px 4px;border-bottom:1px solid rgba(95,232,255,.12)}
+.set-row label{color:#bfe6ff;letter-spacing:1px}
+.set-row input[type=range]{width:180px;accent-color:var(--c1)}
+.set-row input[type=checkbox]{width:16px;height:16px;accent-color:var(--c1)}
+.set-row select{font-family:var(--mono);background:#10151d;color:#dff6ff;border:1px solid var(--c1-dim);
+  padding:3px 8px}
+.set-val{color:var(--c1);min-width:42px;text-align:right;font-size:11px}
+
+/* comms log (per-map narrative) */
+#comms-log{position:absolute;top:88px;left:50%;transform:translateX(-50%);
+  width:min(560px,88vw);background:rgba(6,14,22,.88);border:1px solid var(--c1-dim);
+  padding:12px 16px;font-size:11.5px;line-height:1.8;letter-spacing:1px;color:#bfe0ef;
+  z-index:16;pointer-events:auto;text-align:left}
+#comms-log .cl-head{font-size:9px;letter-spacing:4px;color:var(--c1);margin-bottom:6px}
+#comms-log .cl-close{position:absolute;top:6px;right:10px;cursor:pointer;color:var(--c2);
+  font-size:14px;line-height:1}
+#comms-log .cl-close:hover{color:#fff}
+
+/* radio chatter (banner-adjacent text pop-ins) */
+#radio-log{position:absolute;bottom:130px;left:50%;transform:translateX(-50%);
+  width:min(520px,86vw);text-align:center;pointer-events:none;z-index:15}
+.radio-line{font-size:11px;letter-spacing:2px;color:#8fe8ff;text-shadow:0 0 8px rgba(95,232,255,.6);
+  background:rgba(6,14,22,.55);border-left:2px solid var(--c1);padding:4px 10px;margin-top:4px;
+  animation:radioIn 4.2s ease-out forwards;text-align:left}
+.radio-line.warn{color:#ffb3a6;border-left-color:var(--warn)}
+@keyframes radioIn{0%{opacity:0;transform:translateY(8px)}8%{opacity:1;transform:translateY(0)}
+  78%{opacity:1}100%{opacity:0}}
+
+/* chassis identity tag (persistent HUD readout) */
+#chassis-tag{position:absolute;top:0;right:0;font-size:9px;letter-spacing:2px;color:#7fa8c0;
+  border-bottom:1px solid rgba(95,232,255,.2);padding:2px 6px;display:block;margin-bottom:4px;text-align:right}
+
+/* tutorial prompt */
+#tutorial-prompt{position:absolute;bottom:200px;left:50%;transform:translateX(-50%);
+  padding:10px 22px;font-size:14px;letter-spacing:4px;color:#ffe9c0;
+  background:rgba(30,24,6,.72);border:1px solid rgba(255,200,87,.55);
+  text-shadow:0 0 10px rgba(255,200,87,.6);z-index:16;pointer-events:none;
+  animation:tutPulse 1.3s infinite alternate;text-align:center}
+@keyframes tutPulse{from{box-shadow:0 0 8px rgba(255,200,87,.25)}to{box-shadow:0 0 22px rgba(255,200,87,.7)}}
+#tutorial-prompt .tut-skip{display:block;font-size:9px;letter-spacing:2px;color:var(--c2);
+  margin-top:6px;animation:none}
+
+/* wreck hold progress */
+#wreck-progress{position:absolute;left:50%;top:58%;transform:translateX(-50%);width:180px;
+  display:none;pointer-events:none;z-index:15}
+#wreck-progress .wp-label{font-size:9px;letter-spacing:3px;color:var(--gold);text-align:center;margin-bottom:4px}
+#wreck-progress .wp-track{height:6px;background:rgba(40,34,10,.8);border:1px solid rgba(255,200,87,.5)}
+#wreck-progress .wp-fill{height:100%;width:0%;background:var(--gold)}
+
+/* elite & nemesis target name tag */
+#target-tag{position:absolute;left:50%;top:calc(50% + 34px);transform:translateX(-50%);
+  font-size:10px;letter-spacing:3px;color:var(--gold);text-shadow:0 0 8px rgba(255,200,87,.8);
+  display:none;pointer-events:none;white-space:nowrap}
+#target-tag.nemesis{color:#ff8ad8;text-shadow:0 0 10px rgba(255,90,180,.9);
+  border:1px solid rgba(255,90,180,.5);padding:2px 8px}
+#target-tag.elite{color:#ffc857}
+
+/* photo mode UI */
+#photo-ui{position:absolute;left:50%;bottom:26px;transform:translateX(-50%);display:flex;gap:10px;
+  z-index:32;pointer-events:auto}
+#photo-ui button{font-family:var(--mono);font-size:11px;letter-spacing:2px;padding:8px 16px;
+  color:#dff6ff;background:rgba(10,20,30,.8);border:1px solid var(--c1);cursor:pointer}
+#photo-ui button:hover{background:rgba(30,70,100,.85)}
+#photo-hint{position:absolute;top:20px;left:50%;transform:translateX(-50%);font-size:11px;
+  letter-spacing:4px;color:var(--c1);z-index:32;pointer-events:none}
+
+/* ---------- pause menu additions ---------- */
+#pause-actions{display:flex;gap:10px;margin-top:18px;flex-wrap:wrap;justify-content:center}
+#pause-actions .btn{margin-top:0;padding:9px 22px;font-size:12px;letter-spacing:3px}
+
+/* ---------- resume-offer (run snapshot) ---------- */
+#resume-offer{margin-top:12px;display:none;gap:10px;justify-content:center;align-items:center;
+  font-size:11px;letter-spacing:2px;color:var(--gold)}
+#resume-offer button{font-family:var(--mono);font-size:11px;padding:6px 14px;cursor:pointer;
+  background:rgba(60,48,14,.5);border:1px solid var(--gold);color:var(--gold);letter-spacing:2px}
+#resume-offer button:hover{background:rgba(90,70,20,.7)}
+
+/* colorblind palette (shape coding is primary; hue secondary) */
+body.cb{--warn:#ff8c1a;--good:#58b4ff;--bad:#ff5a7a;--gold:#ffd866}
+body.cb .ind .arrow{border-bottom-color:#ff8c1a}
+body.cb .ind .ally .arrow,body.cb .ind.ally .arrow{border-bottom-color:#58b4ff}
+body.cb #bar-hull-fill{background:linear-gradient(90deg,#1f6fae,#58b4ff)}
+body.cb #banner.gold #banner-main{color:#ffe9a0}
+
+/* NG+ badge */
+#ngplus-badge{display:none;margin-top:6px;font-size:10px;letter-spacing:4px;color:#ff8ad8;
+  text-shadow:0 0 8px rgba(255,90,180,.7)}
+#ngplus-badge.on{display:block}
+
+/* ending panel */
+#screen-ending .title{color:#ffe9c0;text-shadow:0 0 30px rgba(255,200,87,.9)}
+#ending-stats{margin-top:18px;font-size:13px;line-height:2;letter-spacing:2px;color:var(--c2)}
+#ending-stats b{color:#dff6ff;font-weight:400}
+/* ---------- portrait phones: the wrapped battery owns the bottom band,
+   so the scope parks under the score readout instead of behind it -------- */
+@media (max-width:560px) and (orientation:portrait){
+  #radar-wrap{bottom:222px;right:12px}
+  #hud.fp #radar-wrap{bottom:222px;right:12px}
+}
+/* ---------- touch chrome: the pause button owns the top-right corner, so
+   the score block and the alert/boss line step down to clear it ---------- */
+#hud.touch-ui #btn-touch-pause{display:block}
+#hud.touch-ui #hud-tr{top:max(60px,env(safe-area-inset-top))}
+#hud.touch-ui #hud-tc{top:max(60px,env(safe-area-inset-top))}
+</style>
+</head>
+<body>
+<div id="app">
+  <!-- ================= HUD (DOM overlay, pointer-events:none) ================= -->
+  <div id="hud" class="hidden">
+    <div id="vig-red"></div>
+    <div id="vig-blue"></div>
+    <div id="flash-white"></div>
+    <div id="scanlines"></div>
+
+    <!-- top-left: ship status -->
+    <div id="hud-tl">
+      <div class="bar-label"><span>SHIELD</span><span id="shield-num">100</span></div>
+      <div class="bar"><div class="fill" id="bar-shield-fill"></div><div class="ticks"></div></div>
+      <div class="bar-label"><span>HULL</span><span id="hull-num">100</span></div>
+      <div class="bar"><div class="fill" id="bar-hull-fill"></div></div>
+      <div class="bar-label"><span>BOOST</span><span></span></div>
+      <div class="bar thin"><div class="fill" id="bar-boost-fill" style="width:100%"></div></div>
+      <div id="obj-wrap" class="hidden">
+        <div id="objective">
+          <div id="obj-text">SECONDARY OBJECTIVE</div>
+          <div id="obj-bar" class="hidden"><div id="obj-fill"></div></div>
+          <div id="obj-timer" class="hidden">60</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- top-right: score -->
+    <div id="hud-tr">
+      <div id="chassis-tag">VL-9 GUNSHIP</div>
+      <div class="row"><div class="lbl">SCORE</div><div id="score-val">0</div></div>
+      <div class="row" id="combo-wrap">
+        <span id="combo-val" class="glow">x1.0</span>
+        <span id="combo-bar"><div id="combo-fill"></div></span>
+      </div>
+      <div class="row"><div class="lbl">WAVE</div><div id="wave-val">1</div></div>
+      <div class="row"><div class="lbl">BEST</div><div id="best-val">0</div></div>
+    </div>
+
+    <!-- top-center: alerts, boss bar, wave banner -->
+    <div id="hud-tc">
+      <div id="alert-line"></div>
+      <div id="boss-bar" class="hidden">
+        <div id="boss-name">DREADNOUGHT KHARYBDIS</div>
+        <div id="boss-track"><div id="boss-fill"></div><div id="boss-phase"></div></div>
+        <div id="wp-pips"></div>
+      </div>
+    </div>
+    <div id="banner"><div id="banner-main">WAVE 1</div><div id="banner-sub">HOSTILES INBOUND</div></div>
+
+    <!-- center: crosshair + steering reticle + charge ring + lock box -->
+    <div id="crosshair"></div>
+    <div id="reticle"><div class="aim-line"></div><div class="aim-tick"></div><div class="aim-dot"></div></div>
+    <div id="charge-ring"></div>
+    <div id="lockbox">
+      <span></span><span></span><span></span><span></span>
+      <div id="lock-info">
+        <div id="lock-name">INTERCEPTOR</div>
+        <div id="lock-hp"><div id="lock-fill"></div></div>
+      </div>
+    </div>
+
+    <!-- bottom-left: weapons (9-slot battery) -->
+    <div id="overdrive-chip">OVERDRIVE 12s</div>
+    <button id="btn-touch-pause">II</button>
+    <div id="hud-bl">
+      <div class="slot" id="slot-0"><div class="slot-key">[1]</div><div class="slot-name">PULSE BLASTER</div><div class="slot-sub">MK I</div></div>
+      <div class="slot" id="slot-1"><div class="slot-key">[2]</div><div class="slot-name">HEAVY LANCE</div><div class="slot-sub">HOLD TO CHARGE</div></div>
+      <div class="slot" id="slot-2"><div class="slot-key">[3]</div><div class="slot-name">PULSE LANCE</div><div class="slot-sub">ENERGY CANNON</div></div>
+      <div class="slot" id="slot-3"><div class="slot-key">[4]</div><div class="slot-name">SEEKERS</div><div class="slot-sub">12</div></div>
+      <div class="slot slot-sm" id="slot-4"><div class="slot-key">[5]</div><div class="slot-name">SWARM PODS</div><div class="slot-sub">8-WAY SALVO</div></div>
+      <div class="slot slot-sm" id="slot-5"><div class="slot-key">[6]</div><div class="slot-name">RAILGUN</div><div class="slot-sub">HOLD — PIERCE</div></div>
+      <div class="slot slot-sm" id="slot-6"><div class="slot-key">[7]</div><div class="slot-name">ARC TURRET</div><div class="slot-sub">HELIX BURST</div></div>
+      <div class="slot slot-sm" id="slot-7"><div class="slot-key">[8]</div><div class="slot-name">SHARD CANNON</div><div class="slot-sub">CLOSE RANGE</div></div>
+      <div class="slot slot-sm" id="slot-8"><div class="slot-key">[9]</div><div class="slot-name">VOID MINES</div><div class="slot-sub">0 DEPLOYED</div></div>
+    </div>
+
+    <!-- skill cooldown chips (V flares · B nova · N blink · G overdrive) -->
+    <div id="skill-row">
+      <div class="skill-chip" id="skill-flare"><div class="sk-fill" id="skill-flare-fill">V</div><div class="sk-key">V·FLARE</div></div>
+      <div class="skill-chip" id="skill-nova"><div class="sk-fill" id="skill-nova-fill">B</div><div class="sk-key">B·NOVA</div></div>
+      <div class="skill-chip" id="skill-blink"><div class="sk-fill" id="skill-blink-fill">N</div><div class="sk-key">N·BLINK</div></div>
+      <div class="skill-chip" id="skill-od"><div class="sk-fill" id="skill-od-fill">G</div><div class="sk-key">G·OVRDRV</div></div>
+    </div>
+
+    <!-- multi-lock tag markers (positioned per frame) -->
+    <div id="lock-tags"></div>
+
+    <!-- comms log, radio chatter, tutorial, wreck hold, target tag -->
+    <div id="comms-log" class="hidden">
+      <div class="cl-head">COMMS LOG</div>
+      <div class="cl-close" id="comms-close">×</div>
+      <div id="comms-body"></div>
+    </div>
+    <div id="radio-log"></div>
+    <div id="tutorial-prompt" class="hidden"></div>
+    <div id="wreck-progress">
+      <div class="wp-label">HOLD [E] — SALVAGE</div>
+      <div class="wp-track"><div class="wp-fill" id="wreck-fill"></div></div>
+    </div>
+    <div id="target-tag"></div>
+
+    <!-- bottom-right: radar -->
+    <div id="radar-wrap">
+      <canvas id="radar" width="440" height="440" style="width:220px;height:220px"></canvas>
+      <div id="radar-label">TACTICAL</div>
+    </div>
+
+    <div id="popups"></div>
+    <div id="hitmarker"></div>
+    <div id="indicators"></div>
+    <div id="stats-panel"></div>
+    <div id="hint-line">VOID LANCER v1.6.0 — DEPTH BUILD — NO EXTERNAL ASSETS</div>
+  </div>
+
+  <!-- ================= FULL SCREENS ================= -->
+  <div id="screen-start" class="screen">
+    <div class="title">VOID LANCER</div>
+    <div class="subtitle">DEEP SPACE INTERCEPTOR — CAMPAIGN EXPANSION</div>
+    <div class="blurb">The dreadnought <b>KHARYBDIS</b> broke through the picket line. Every run starts on the
+      launchpad — hold off the boarding wave, fly the ascent corridor while your power plant spins up,
+      then take the fight to the sector.<br>
+      <b>ADVENTURE</b> chains ten boss-gated maps; you CHOOSE a refit after each sector and it bolts onto
+      your hull for the rest of the run. Death resets everything.
+      <b>ENDLESS</b> drops you into the classic infinite-wave arena.</div>
+    <div class="controls">
+      <div><span class="k">MOUSE</span></div><div>steer / aim &nbsp;·&nbsp; <span class="k">LMB</span> fire (hold = tag for seekers)</div>
+      <div><span class="k">W</span> <span class="k">S</span></div><div>thrust forward / brake</div>
+      <div><span class="k">A</span> <span class="k">D</span></div><div>strafe left / right</div>
+      <div><span class="k">SPACE</span> <span class="k">C</span></div><div>thrust up / down</div>
+      <div><span class="k">Q</span> <span class="k">E</span> / <span class="k">WHEEL</span></div><div>roll</div>
+      <div><span class="k">SHIFT</span></div><div>boost (afterburner)</div>
+      <div><span class="k">1</span>-<span class="k">9</span> / <span class="k">X</span></div><div>switch weapon (9-slot battery)</div>
+      <div><span class="k">V</span> <span class="k">B</span> <span class="k">N</span> <span class="k">G</span></div><div>flares / nova / blink / overdrive</div>
+      <div><span class="k">F</span></div><div>cockpit / chase view</div>
+      <div><span class="k">M</span> <span class="k">P</span> <span class="k">`</span></div><div>mute / pause / debug stats</div>
+      <div><span class="k">SHIFT</span> + <span class="k">.</span></div><div>dev console menu</div>
+      <div><span class="k">TOUCH</span></div><div>drag to steer · second finger fires · [II] pauses</div>
+    </div>
+    <div id="start-cta" class="blink">— SELECT MODE —</div>
+    <div id="mode-row">
+      <button class="mode-btn" id="btn-endless">
+        <div class="mode-name">ENDLESS</div>
+        <div class="mode-desc">Launchpad defense, ascent, then the infinite-wave arena.
+          Ship stock resets every run — just like it always has.</div>
+      </button>
+      <button class="mode-btn adventure" id="btn-adventure">
+        <div class="mode-name">ADVENTURE</div>
+        <div class="mode-desc">Ten sectors, ten capitals — black holes, nebulae and the last gate.
+          Choose a refit after every sector; dying anywhere restarts the run from the launchpad.</div>
+      </button>
+    </div>
+    <div id="ship-label">— SELECT CHASSIS —</div>
+    <div id="ship-row">
+      <button class="ship-btn" id="chassis-interceptor" data-chassis="interceptor">
+        <div class="ship-name">IX-3 INTERCEPTOR</div>
+        <div class="ship-role">EVADE &amp; OVERWHELM</div>
+        <div class="ship-stats">LOW HULL · HIGH TURN &amp; BOOST · FAST COOLDOWNS</div>
+      </button>
+      <button class="ship-btn sel" id="chassis-gunship" data-chassis="gunship">
+        <div class="ship-name">VL-9 GUNSHIP</div>
+        <div class="ship-role">BALANCED DEFAULT</div>
+        <div class="ship-stats">BALANCED STATS · THE STANDARD FIGHTER FRAME</div>
+      </button>
+      <button class="ship-btn" id="chassis-heavy" data-chassis="heavy">
+        <div class="ship-name">HT-8 BASTION</div>
+        <div class="ship-role">TRADE HITS, HOLD GROUND</div>
+        <div class="ship-stats">HIGH HULL/SHIELD · SLOW TURN · +35% WEAPON DAMAGE</div>
+      </button>
+    </div>
+
+    <div id="diff-label">— DIFFICULTY —</div>
+    <div id="diff-row">
+      <button class="diff-btn" data-diff="easy"><div class="d-name">EASY</div><div class="d-desc">TRAINING CRUISE</div></button>
+      <button class="diff-btn sel" data-diff="normal"><div class="d-name">NORMAL</div><div class="d-desc">STANDARD PATROL</div></button>
+      <button class="diff-btn" data-diff="hard"><div class="d-name">HARD</div><div class="d-desc">THEY WANT YOU DEAD</div></button>
+    </div>
+
+    <div id="mod-label">— HAZARD MODIFIERS (OPT-IN) —</div>
+    <div id="mod-row">
+      <button class="mod-btn" data-mod="noShieldRegen">NO SHIELD REGEN<span class="m-mult">×1.20</span></button>
+      <button class="mod-btn" data-mod="seeThroughFlares">ENEMIES SEE THROUGH FLARES<span class="m-mult">×1.15</span></button>
+      <button class="mod-btn" data-mod="noRadar">DEAD RADAR<span class="m-mult">×1.15</span></button>
+      <button class="mod-btn" data-mod="doubleAggro">HUNTER KILLERS<span class="m-mult">×1.25</span></button>
+      <button class="mod-btn" data-mod="oneLife">ONE LIFE<span class="m-mult">×1.40</span></button>
+    </div>
+
+    <div class="util-row">
+      <button class="util-btn" id="btn-shop">HANGAR SHOP<span class="credit" id="shop-credits-mini">0 CR</span></button>
+      <button class="util-btn" id="btn-stats">STATISTICS</button>
+      <button class="util-btn" id="btn-settings">SETTINGS</button>
+      <button class="util-btn" id="btn-ngplus" style="display:none">NEW GAME+</button>
+    </div>
+    <div id="ngplus-badge">— NEW GAME+ ARMED — ESCALATED ENEMY TIERS —</div>
+
+    <div id="resume-offer">
+      <span id="resume-text">RUN SNAPSHOT FOUND</span>
+      <button id="btn-resume">RESUME</button>
+      <button id="btn-discard">DISCARD</button>
+    </div>
+
+    <div id="start-best">BEST SCORE&nbsp; 0</div>
+    <div id="hint-menu" style="margin-top:6px;font-size:9px;letter-spacing:3px;color:rgba(157,180,200,.4)">VOID LANCER v1.6.0</div>
+  </div>
+
+  <div id="screen-pause" class="screen hidden">
+    <div class="title" style="font-size:40px;letter-spacing:14px">STANDBY</div>
+    <div class="blurb">Engines idling. The sector is still hostile.</div>
+    <div id="pause-actions">
+      <button class="btn" id="btn-pause-resume">RESUME&nbsp; [P]</button>
+      <button class="btn" id="btn-pause-settings">SETTINGS</button>
+      <button class="btn" id="btn-pause-photo">PHOTO MODE</button>
+    </div>
+    <div id="pause-cta" class="blink" style="margin-top:22px;font-size:12px;letter-spacing:5px;color:#dff6ff">— OR CLICK ANYWHERE TO RESUME —</div>
+  </div>
+
+  <div id="screen-over" class="screen hidden">
+    <div class="title" style="font-size:46px;letter-spacing:16px" id="over-title">SHIP DESTROYED</div>
+    <div id="over-stats"></div>
+    <button class="btn" id="btn-restart">RELAUNCH&nbsp; [R]</button>
+    <button class="btn" id="btn-mode" style="margin-top:12px">MODE SELECT&nbsp; [B]</button>
+  </div>
+
+  <div id="screen-error" class="screen hidden">
+    <div class="title">SYSTEM FAULT</div>
+    <div id="error-msg">Unknown error.</div>
+  </div>
+
+  <!-- map-refit CHOICE screen (between adventure maps) -->
+  <div id="screen-upgrade" class="screen hidden">
+    <div class="title" style="font-size:38px;letter-spacing:12px">REFIT AVAILABLE</div>
+    <div class="upg-note">SECTOR CLEARED — INSTALL ONE SYSTEM</div>
+    <div id="upg-row"></div>
+  </div>
+
+  <!-- hangar shop / loadout (perks + cosmetics) -->
+  <div id="screen-shop" class="screen hidden">
+    <div class="title" style="font-size:36px;letter-spacing:12px">HANGAR SHOP</div>
+    <div class="subtitle">META-CURRENCY FROM ENDLESS RUNS</div>
+    <div id="shop-credits">0 CR</div>
+    <div class="panel-cols">
+      <div class="shop-col"><h3>— STARTING PERKS (NEXT ADVENTURE) —</h3><div id="shop-perks"></div></div>
+      <div class="shop-col"><h3>— SHIP LIVERIES (COSMETIC) —</h3><div id="shop-liveries"></div></div>
+    </div>
+    <button class="btn" id="btn-shop-close">BACK&nbsp; [ESC]</button>
+  </div>
+
+  <!-- lifetime statistics -->
+  <div id="screen-stats" class="screen hidden">
+    <div class="title" style="font-size:36px;letter-spacing:12px">PILOT RECORD</div>
+    <div id="stats-grid"></div>
+    <button class="btn" id="btn-stats-close">BACK&nbsp; [ESC]</button>
+  </div>
+
+  <!-- settings -->
+  <div id="screen-settings" class="screen hidden">
+    <div class="title" style="font-size:36px;letter-spacing:12px">SETTINGS</div>
+    <div id="settings-list">
+      <div class="set-row"><label>MOUSE SENSITIVITY</label>
+        <span><input type="range" id="set-sens" min="0.4" max="2.5" step="0.05"><span class="set-val" id="val-sens"></span></span></div>
+      <div class="set-row"><label>INVERT Y</label><input type="checkbox" id="set-invert"></div>
+      <div class="set-row"><label>MASTER VOLUME</label>
+        <span><input type="range" id="set-vol-master" min="0" max="1" step="0.05"><span class="set-val" id="val-vol-master"></span></span></div>
+      <div class="set-row"><label>SFX VOLUME</label>
+        <span><input type="range" id="set-vol-sfx" min="0" max="1" step="0.05"><span class="set-val" id="val-vol-sfx"></span></span></div>
+      <div class="set-row"><label>MUSIC VOLUME</label>
+        <span><input type="range" id="set-vol-music" min="0" max="1" step="0.05"><span class="set-val" id="val-vol-music"></span></span></div>
+      <div class="set-row"><label>QUALITY TIER</label>
+        <select id="set-quality">
+          <option value="auto">AUTO</option><option value="high">HIGH (FULL RES)</option>
+          <option value="med">MEDIUM</option><option value="low">LOW</option>
+        </select></div>
+      <div class="set-row"><label>HUD SCALE</label>
+        <span><input type="range" id="set-hud" min="0.62" max="1.35" step="0.01"><span class="set-val" id="val-hud"></span></span></div>
+      <div class="set-row"><label>COLORBLIND-SAFE PALETTE</label><input type="checkbox" id="set-cb"></div>
+    </div>
+    <button class="btn" id="btn-settings-close">BACK&nbsp; [ESC]</button>
+  </div>
+
+  <!-- campaign ending sequence -->
+  <div id="screen-ending" class="screen hidden">
+    <div class="title" style="font-size:44px;letter-spacing:16px">SECTOR LIBERATED</div>
+    <div class="subtitle">THE THRESHOLD IS BROKEN</div>
+    <div id="ending-stats"></div>
+    <button class="btn" id="btn-ending-ok">RETURN TO BASE</button>
+  </div>
+
+  <!-- photo mode chrome -->
+  <div id="photo-hint" class="hidden">PHOTO MODE — DRAG TO ORBIT · W/A/S/D MOVE · Q/E UP/DOWN</div>
+  <div id="photo-ui" class="hidden">
+    <button id="photo-shot">SAVE SHOT [ENTER]</button>
+    <button id="photo-hud">HUD: ON</button>
+    <button id="photo-exit">EXIT [P]</button>
+  </div>
+
+  <!-- CAMPAIGN: phase-cut fade overlay (CSS transition, see #fade) -->
+  <div id="fade"></div>
+  <!-- CAMPAIGN: cheat / dev console — built by Cheats.init(), hidden by default -->
+  <div id="cheat-panel" class="hidden"></div>
+</div>
+
+<!-- ============================================================
+     Three.js r128 + post-processing passes — VENDORED LOCALLY so the
+     game runs fully OFFLINE (no CDN round-trip, no file:// CORS pain;
+     just open index.html). Classic script tags, NOT ES modules.
+     NOTE ORDER: EffectComposer.js defines THREE.Pass, which RenderPass /
+     ShaderPass / UnrealBloomPass prototype-chain against AT LOAD TIME.
+============================================================ -->
+<script src="vendor/three.min.js"></script>
+<script src="vendor/EffectComposer.js"></script>
+<script src="vendor/CopyShader.js"></script>
+<script src="vendor/LuminosityHighPassShader.js"></script>
+<script src="vendor/RenderPass.js"></script>
+<script src="vendor/ShaderPass.js"></script>
+<script src="vendor/UnrealBloomPass.js"></script>
+
+<!-- GAME CODE - classic scripts (share one global scope), strict order:
+     data.js      CFG + MAPS (pure config, no logic)
+     engine.js    utils, input, audio, projectiles, world, Player, CameraRig, ShipGeo
+     fx.js        pooled particle/explosion/shockwave effects
+     entities.js  Enemy base + subclasses, Boss, allies
+     game.js      wave director, Game, HUD, Campaign, Cheats, boot + main loop -->
+<script src="data.js"></script>
+<script src="engine.js"></script>
+<script src="fx.js"></script>
+<script src="entities.js"></script>
+<script src="game.js"></script>
+
+</body>
+</html>
