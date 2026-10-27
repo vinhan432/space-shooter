@@ -51,11 +51,10 @@ jobs:
 
       - name: Deploy to Cloudflare Pages
         uses: cloudflare/wrangler-action@v4
+        env:
+          DEPLOY_COMMIT_MESSAGE: ${{ github.event.head_commit.message }}
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          preCommands: |
-            projects="$(wrangler pages project list --json)"
-            node -e 'const data=JSON.parse(process.argv[1]); const projects=Array.isArray(data)?data:(data.result||data.projects||[]); process.exit(projects.some(project=>project.name==="space-shooter")?0:1)' "$projects" || wrangler pages project create space-shooter --production-branch main
-          command: pages deploy dist --project-name=space-shooter --branch=main
+          command: pages deploy dist --project-name=space-shooter --branch=main --commit-hash=${{ github.sha }} --commit-message="$DEPLOY_COMMIT_MESSAGE"
           gitHubToken: ${{ secrets.GITHUB_TOKEN }}
