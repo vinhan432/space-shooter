@@ -62,6 +62,8 @@ const U = {
 const _v1 = new THREE.Vector3(), _v2 = new THREE.Vector3(),
       _v3 = new THREE.Vector3(), _v4 = new THREE.Vector3(),
       _v5 = new THREE.Vector3(), _v6 = new THREE.Vector3(),
+      _rv1 = new THREE.Vector3(), _rv2 = new THREE.Vector3(),
+      _rv3 = new THREE.Vector3(), _rv4 = new THREE.Vector3(),
       _q1 = new THREE.Quaternion(), _q2 = new THREE.Quaternion(),
       _e1 = new THREE.Euler(), _m1 = new THREE.Matrix4();
 const UP = new THREE.Vector3(0, 1, 0);
@@ -138,6 +140,9 @@ class Input {
     this.btn = [false, false, false];  // mouse buttons held
     this.btnJust = [false, false, false];
     this._lockTimer = 0;
+    this.aimT = performance.now();     // last time the mouse actually moved
+                                       // (drives the steering assist, see
+                                       // Input.aimAssist)
 
     // Some contexts (virtual keyboards, IMEs, synthetic events) deliver an
     // empty e.code — fall back to deriving it from e.key so the controls
@@ -177,12 +182,6 @@ class Input {
     el.addEventListener('contextmenu', (e) => e.preventDefault());
 
     window.addEventListener('mousemove', (e) => {
-      // PHOTO MODE: free-look drag even without pointer lock
-      if (typeof G !== 'undefined' && G.photo && G.photo.active) {
-        this.cursor.x = U.clamp(this.cursor.x + (e.movementX || 0) * 0.8, -2000, 2000);
-        this.cursor.y = U.clamp(this.cursor.y + (e.movementY || 0) * 0.8, -2000, 2000);
-        return;
-      }
       // A genuine mouse move hands control back to the mouse: a stray touch on a
       // touchscreen laptop must not strand pointer-lock flight. Synthetic tap-mouse
       // events carry no movement, and touch-only devices report no fine pointer.
@@ -199,11 +198,13 @@ class Input {
         // re-locking — clamp so the ship doesn't lurch.
         const mx = U.clamp(e.movementX || 0, -80, 80);
         const my = U.clamp(e.movementY || 0, -80, 80);
-        this.cursor.x = U.clamp(this.cursor.x + mx * CFG.flight.mouseSens, -CFG.flight.cursorRadius, CFG.flight.cursorRadius);
-        this.cursor.y = U.clamp(this.cursor.y + my * CFG.flight.mouseSens, -CFG.flight.cursorRadius, CFG.flight.cursorRadius);
+        if (mx || my) this.aimT = performance.now();
+        this.cursor.x = U.clamp(this.cursor.x + mx * CFG.settings.mouseSens, -CFG.flight.cursorRadius, CFG.flight.cursorRadius);
+        this.cursor.y = U.clamp(this.cursor.y + my * CFG.settings.mouseSens, -CFG.flight.cursorRadius, CFG.flight.cursorRadius);
       } else if (this.hoverMode && G.game && G.game.state === 'playing') {
         this.cursor.x = U.clamp(e.clientX - window.innerWidth * 0.5, -CFG.flight.cursorRadius, CFG.flight.cursorRadius);
         this.cursor.y = U.clamp(e.clientY - window.innerHeight * 0.5, -CFG.flight.cursorRadius, CFG.flight.cursorRadius);
+        this.aimT = performance.now();
       }
     });
 
@@ -312,6 +313,23 @@ class Input {
   justKey(code) { return this.just.has(code); }
   recenterCursor() { this.cursor.x = 0; this.cursor.y = 0; }
 
+  /* ---- steering assist (CFG.settings.steerAssist) ----
+     The virtual cursor is a persistent RATE command, so a small mouse
+     nudge keeps the ship rotating until the cursor comes back. With the
+     assist on, an idle mouse bleeds the cursor toward center — but only
+     INSIDE the fine-aim band (CFG.flight.assistRadius): a cursor parked
+     at the rim is a deliberate hard turn and keeps full authority.
+     Runs for every camera mode (the cursor is shared). */
+  aimAssist(dt) {
+    const F = CFG.flight;
+    if (!CFG.settings.steerAssist || this.touch || this.gpActive) return;
+    if (performance.now() - this.aimT < F.assistDelay * 1000) return;
+    const r = Math.hypot(this.cursor.x, this.cursor.y);
+    if (r <= 0.5 || r >= F.assistRadius) return;
+    const k = Math.exp(-F.assistRate * (1 - r / F.assistRadius) * dt);
+    this.cursor.x *= k; this.cursor.y *= k;
+  }
+
   // call once at the END of every frame
   endFrame() {
     this.just.clear();
@@ -387,7 +405,7 @@ class Input {
    blocked AudioContext can never crash the game.
 ============================================================ */
 class AudioSys {
-  constructor() { this.ctx = null; this.master = null; this.muted = false; this.ready = false;
+  constructor() { this.ctx = null; this.master = null; this.sfx = null; this.muted = false; this.ready = false;
     this._last = Object.create(null); this.engine = null; }
 
   // must be called from a user gesture (click) or it silently no-ops
@@ -401,6 +419,10 @@ class AudioSys {
       this.master.gain.value = (CFG.settings && CFG.settings.volMaster != null)
         ? 0.55 * CFG.settings.volMaster : 0.55;
       this.master.connect(this.ctx.destination);
+      // one-shots route through the SFX bus; engine/ambient beds stay on master
+      this.sfx = this.ctx.createGain();
+      this.sfx.gain.value = (CFG.settings && CFG.settings.volSfx != null) ? CFG.settings.volSfx : 1;
+      this.sfx.connect(this.master);
       // shared noise buffer (2s of white noise, reused by everything)
       const len = this.ctx.sampleRate * 2;
       this.noiseBuf = this.ctx.createBuffer(1, len, this.ctx.sampleRate);
@@ -424,6 +446,7 @@ class AudioSys {
   setMusicVol(v) {
     if (G.music && G.music.bus) G.music.bus.gain.value = CFG.music.master * v;
   }
+  setSfxVol(v) { if (this.sfx) this.sfx.gain.value = v; }
 
   _throttled(key, ms) {
     const t = performance.now();
@@ -441,7 +464,7 @@ class AudioSys {
     o.frequency.exponentialRampToValueAtTime(Math.max(1, f1), t + dur);
     g.gain.setValueAtTime(gain, t);
     g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
-    o.connect(g); g.connect(this.master);
+    o.connect(g); g.connect(this.sfx);
     o.start(t); o.stop(t + dur + 0.02);
   }
 
@@ -458,7 +481,7 @@ class AudioSys {
     f.frequency.exponentialRampToValueAtTime(Math.max(30, filtHz1), t + dur);
     g.gain.setValueAtTime(gain, t);
     g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
-    src.connect(f); f.connect(g); g.connect(this.master);
+    src.connect(f); f.connect(g); g.connect(this.sfx);
     src.start(t, Math.random()); src.stop(t + dur + 0.02);
   }
 
@@ -505,6 +528,14 @@ class AudioSys {
     this._osc('sine', 120, 48, 0.22, 0.16);
     this._osc('sawtooth', 340, 90, 0.16, 0.07);
     this._noise(0.14, 0.1, 900, 200);
+  }
+  /* afterburner ENGAGE — one clear whoosh per ignition (the sustained
+     burner itself rides the engine bed via engineSet). Distinct from the
+     engine loop, so a re-engage never reads as the same sound restarting. */
+  boostWhoosh() {
+    if (this._throttled('bw', 220)) return;
+    this._noise(0.5, 0.4, 2800, 260, 1.3);
+    this._osc('sine', 165, 52, 0.38, 0.26);
   }
 
   /* ---- continuous engine loop: thrust 0..1 (visual+audio always agree) ---- */
@@ -713,6 +744,13 @@ const PROJ_STYLES = {
   vmine:   { count: 16,  radius: 1.6, geo: () => { const g = new THREE.SphereGeometry(0.9, 10, 8);
              g.scale(1, 1, 0.55); return g; },
              mat: () => new THREE.MeshBasicMaterial({ color: 0x9a4aff }) },
+  // UPGRADE(v1.8.1): HAZARD METEORS — burning rocks from the meteor-shower
+  // hazard. Enemy-owned, no hp: the player dodges the ram or eats it (the
+  // volley logic and telegraphs live in World._buildMeteors). The fiery
+  // streak is the entry-heat of the trail pass, not a separate effect.
+  meteor:  { count: 24,  radius: 3.2, geo: () => new THREE.IcosahedronGeometry(1, 0),
+             mat: () => new THREE.MeshBasicMaterial({ color: 0x4a3226 }),
+             trail: { w: 2.6, max: 46, col: 0xff7a3a } },
 };
 
 /* NEW: shared gradient geometry for tracer streaks. Vertex colors run
@@ -785,6 +823,7 @@ class ProjPool {
 
 const Projectiles = {
   pools: {},
+  _faScratch: [],   // friendly-asset list scratch (see _friendlyAssets)
 
   init(scene) {
     for (const k in PROJ_STYLES) this.pools[k] = new ProjPool(scene, k);
@@ -813,6 +852,12 @@ const Projectiles = {
     if (owner === 'player' && !it.noStats) {
       const cm = (G.player && G.player.ship && G.player.ship.dmg) || 1;
       it.dmg *= cm;
+    } else if (owner === 'enemy' && opts.src && opts.src.dmgMult) {
+      /* §4 NEMESIS: enemy-side mirror of the chassis mult above. The rival's
+         return fire is meant to hit ~35% harder (CFG.nemesis.dmgMult), and
+         scaling it HERE means no per-class stat is duplicated or mutated —
+         the same funnel that scales the player's guns scales his. */
+      it.dmg *= opts.src.dmgMult;
     }
     it.src = opts.src || null;   // nemesis: which enemy fired this
     it.hp = opts.hp || 0;
@@ -830,6 +875,7 @@ const Projectiles = {
     /* armT (void mines) and knock (shard cannon) are per-style fields —
        reset EVERY mutable field so a recycled slot can't inherit stale state. */
     it.armT = 0;                    // void mine arming timer
+    it.age = 0;                     // FIX(pool): vmine tumble phase leaked across reused slots — a recycled mine spawned mid-tumble at a random angle
     it.knock = opts.knock || 0;     // shard knockback rides the item
     if (it.hitSet) it.hitSet.clear();   // pooled slots reuse — a stale
     it.hitSet = null;                   // hitSet makes reused slugs ghost through targets
@@ -1017,7 +1063,10 @@ const Projectiles = {
       } else {
         if (segSphere(it.prev.x, it.prev.y, it.prev.z, it.pos.x, it.pos.y, it.pos.z,
             en.pos.x, en.pos.y, en.pos.z, en.radius + it.radius, _v5) >= 0) {
-          const died = en.damage(dmg, _v5, it.vel, true); // byPlayer: mines "safe" when popped by the shooter
+          /* UPGRADE(content v1.8.1): SPOTTER assist — a hull painting the
+             amber designation mark takes +25% from every player round. */
+          const mark = (en.designated > 0) ? 1.25 : 1;
+          const died = en.damage(dmg * mark, _v5, it.vel, true); // byPlayer: mines "safe" when popped by the shooter
           // per-shot knockback; bosses are mass-locked
           if (it.knock > 0 && en.vel && en.type !== 'boss') {
             _v6.copy(it.vel).normalize();
@@ -1074,6 +1123,19 @@ const Projectiles = {
     }
   },
 
+  /* live friendly actors that enemy fire and enemy blasts can hurt. Rebuilt
+     each call from the wave director's state (never cached across frames:
+     an asset can die or be torn down at any point in the wave). */
+  _friendlyAssets() {
+    const out = this._faScratch;
+    out.length = 0;
+    const w = G.waves;
+    if (!w) return out;
+    if (w.ally && w.ally.alive) out.push(w.ally);
+    if (w.pod && w.pod.alive) out.push(w.pod);
+    return out;
+  },
+
   /* enemy projectiles vs: player, escort ally, world */
   _collideEnemyShot(it, dt) {
     const p = G.player;
@@ -1102,11 +1164,13 @@ const Projectiles = {
         return true;
       }
     }
-    const ally = G.waves && G.waves.ally;
-    if (ally && ally.alive) {
+    /* friendly assets: the escort corvette AND the §7 distress pod. One
+       list, so a new objective actor only has to be registered here to be
+       shootable by enemy fire. */
+    for (const fa of this._friendlyAssets()) {
       if (segSphere(it.prev.x, it.prev.y, it.prev.z, it.pos.x, it.pos.y, it.pos.z,
-          ally.pos.x, ally.pos.y, ally.pos.z, ally.radius + it.radius, _v5) >= 0) {
-        ally.damage(it.dmg, _v5);
+          fa.pos.x, fa.pos.y, fa.pos.z, fa.radius + it.radius, _v5) >= 0) {
+        fa.damage(it.dmg, _v5);
         FX.hit(_v5, 6);
         return true;
       }
@@ -1185,10 +1249,12 @@ const Projectiles = {
         G.player.vel.addScaledVector(_v6, k * f * (0.5 + radius * 0.03));
       }
     }
-    const ally = G.waves && G.waves.ally;
-    if (ally && ally.alive && dmg > 0 && !friendly) { // your own AoE spares the escort
-      const d = ally.pos.distanceTo(pos);
-      if (d < radius) ally.damage(dmg * (1 - d / radius), pos);
+    /* your own AoE spares friendly assets; enemy blasts chew on them */
+    if (dmg > 0 && !friendly) {
+      for (const fa of this._friendlyAssets()) {
+        const d = fa.pos.distanceTo(pos);
+        if (d < radius) fa.damage(dmg * (1 - d / radius), pos);
+      }
     }
   },
 
@@ -1202,6 +1268,7 @@ const Projectiles = {
     this._updatePool(this.pools.shard, dt, true);
     this._updatePool(this.pools.ebolt, dt, false);
     this._updatePool(this.pools.eheavy, dt, false);
+    this._updatePool(this.pools.meteor, dt, false);   // v1.8.1 hazard rocks
     this._updatePool(this.pools.emissile, dt, false);
     this._updatePool(this.pools.vmine, dt, true, true);   // inert: drifts only, armed by Player._updateVoidMines
   },
@@ -1335,6 +1402,211 @@ function paintTerran() {
   ctx.putImageData(img, 0, 0);
   return canvasTex(c);
 }
+/* ---------- v1.8 biome painters: lava / toxic / crystal / desert / ocean / tundra
+   All follow paintRocky's signature (3 palette colors: dark, mid, bright) so
+   MAPS entries only supply a palette array. Tone ≠ palette-reuse: each biome
+   has its own texture field, so sectors read differently at a glance. ---- */
+function paintLava(base, mid, hot) {
+  const c = makeCanvas(512, 256), ctx = c.getContext('2d');
+  const img = ctx.createImageData(512, 256), d = img.data;
+  for (let y = 0; y < 256; y++) for (let x = 0; x < 512; x++) {
+    const n = fbm(x * 0.03, y * 0.03, 5);
+    const cr = fbm(x * 0.11 + 7.3, y * 0.11 + 3.1, 3);   // fracture field
+    const i = (y * 512 + x) * 4;
+    let k = U.clamp(n * 1.3 - 0.25, 0, 1);
+    let r = U.lerp(base[0], mid[0], k), g = U.lerp(base[1], mid[1], k), b = U.lerp(base[2], mid[2], k);
+    if (cr > 0.6) {                                        // molten cracks glow
+      const t = U.clamp((cr - 0.6) * 2.6, 0, 1);
+      r = U.lerp(r, hot[0], t); g = U.lerp(g, hot[1], t); b = U.lerp(b, hot[2], t);
+      const glow = 1 + t * 0.9;
+      r = Math.min(255, r * glow); g = Math.min(255, g * glow); b = Math.min(255, b * glow);
+    }
+    d[i] = r; d[i + 1] = g; d[i + 2] = b; d[i + 3] = 255;
+  }
+  ctx.putImageData(img, 0, 0);
+  return canvasTex(c);
+}
+
+function paintToxic(base, mid, acid) {
+  const c = makeCanvas(512, 256), ctx = c.getContext('2d');
+  const img = ctx.createImageData(512, 256), d = img.data;
+  for (let y = 0; y < 256; y++) for (let x = 0; x < 512; x++) {
+    const n = fbm(x * 0.035, y * 0.035, 5);
+    const pool = fbm(x * 0.09 + 11, y * 0.09, 3);          // acid pool blotches
+    const i = (y * 512 + x) * 4;
+    let k = U.clamp(n * 1.2 - 0.15, 0, 1);
+    let r = U.lerp(base[0], mid[0], k), g = U.lerp(base[1], mid[1], k), b = U.lerp(base[2], mid[2], k);
+    if (pool > 0.55) {                                      // pooled acid brightens
+      const t = U.clamp((pool - 0.55) * 2.2, 0, 1);
+      r = U.lerp(r, acid[0], t); g = U.lerp(g, acid[1], t); b = U.lerp(b, acid[2], t);
+    }
+    if (fbm(x * 0.3 + 5, y * 0.3, 2) > 0.84) { r = Math.min(255, r * 1.4); g = Math.min(255, g * 1.4); b = Math.min(255, b * 1.4); }
+    d[i] = r; d[i + 1] = g; d[i + 2] = b; d[i + 3] = 255;
+  }
+  ctx.putImageData(img, 0, 0);
+  // dark pollution veins crossing the pools
+  ctx.strokeStyle = 'rgba(20,40,30,.5)'; ctx.lineWidth = 1;
+  for (let i = 0; i < 22; i++) {
+    let x = U.rand(0, 512), y = U.rand(0, 256);
+    ctx.beginPath(); ctx.moveTo(x, y);
+    for (let s = 0; s < 12; s++) { x += U.rand(-20, 20); y += U.rand(-8, 8); ctx.lineTo(x, y); }
+    ctx.stroke();
+  }
+  return canvasTex(c);
+}
+
+function paintCrystal(base, mid, gem) {
+  const c = makeCanvas(512, 256), ctx = c.getContext('2d');
+  const img = ctx.createImageData(512, 256), d = img.data;
+  for (let y = 0; y < 256; y++) for (let x = 0; x < 512; x++) {
+    const n = fbm(x * 0.045, y * 0.045, 5);
+    const field = fbm(x * 0.012 + 5, y * 0.012, 4);        // crystal fields
+    const i = (y * 512 + x) * 4;
+    let k = U.clamp(n * 1.15 - 0.15, 0, 1);
+    let r = U.lerp(base[0], mid[0], k), g = U.lerp(base[1], mid[1], k), b = U.lerp(base[2], mid[2], k);
+    if (field > 0.6) {
+      const t = U.clamp((field - 0.6) * 2.5, 0, 1);
+      r = U.lerp(r, gem[0], t); g = U.lerp(g, gem[1], t); b = U.lerp(b, gem[2], t);
+    }
+    if (fbm(x * 0.3 + 17, y * 0.3, 2) > 0.86) {            // sparkle facets
+      r = Math.min(255, r * 1.5); g = Math.min(255, g * 1.5); b = Math.min(255, b * 1.5);
+    }
+    d[i] = r; d[i + 1] = g; d[i + 2] = b; d[i + 3] = 255;
+  }
+  ctx.putImageData(img, 0, 0);
+  return canvasTex(c);
+}
+
+function paintDesert(base, mid, light) {
+  const c = makeCanvas(512, 256), ctx = c.getContext('2d');
+  const img = ctx.createImageData(512, 256), d = img.data;
+  for (let y = 0; y < 256; y++) for (let x = 0; x < 512; x++) {
+    const n = fbm(0.3, y * 0.045, 4);
+    const band = 0.5 + 0.28 * Math.sin(y * 0.055 + n * 7.5) + 0.12 * Math.sin(y * 0.021 + 1.7);
+    const i = (y * 512 + x) * 4;
+    let k = U.clamp(band, 0, 1);
+    let r = U.lerp(base[0], mid[0], k), g = U.lerp(base[1], mid[1], k), b = U.lerp(base[2], mid[2], k);
+    if (fbm(x * 0.06, y * 0.06, 3) > 0.72) {               // rock outcrops
+      const t = U.clamp((fbm(x * 0.06, y * 0.06, 3) - 0.72) * 3, 0, 1);
+      r = U.lerp(r, base[0], t); g = U.lerp(g, base[1], t); b = U.lerp(b, base[2], t);
+    }
+    if (fbm(x * 0.2, y * 0.05, 2) > 0.76) {                // wind streaks
+      r = U.lerp(r, light[0], 0.7); g = U.lerp(g, light[1], 0.7); b = U.lerp(b, light[2], 0.7);
+    }
+    d[i] = r; d[i + 1] = g; d[i + 2] = b; d[i + 3] = 255;
+  }
+  ctx.putImageData(img, 0, 0);
+  return canvasTex(c);
+}
+
+function paintOcean(base, mid, island) {
+  const c = makeCanvas(512, 256), ctx = c.getContext('2d');
+  const img = ctx.createImageData(512, 256), d = img.data;
+  for (let y = 0; y < 256; y++) for (let x = 0; x < 512; x++) {
+    const n = fbm(x * 0.013, y * 0.013, 5) + 0.18 * Math.sin(y * 0.05);
+    const i = (y * 512 + x) * 4;
+    if (n > 0.62) {                                        // islands
+      const k = U.clamp((n - 0.62) * 4, 0, 1);
+      d[i] = U.lerp(mid[0], island[0], k); d[i + 1] = U.lerp(mid[1], island[1], k); d[i + 2] = U.lerp(mid[2], island[2], k);
+    } else {                                               // ocean depth shelf
+      const k = U.clamp(n * 2.4, 0, 1);
+      d[i] = U.lerp(base[0], mid[0], k); d[i + 1] = U.lerp(base[1], mid[1], k); d[i + 2] = U.lerp(base[2], mid[2], k);
+    }
+    if (y < 26 || y > 232) { d[i] = 235; d[i + 1] = 245; d[i + 2] = 250; }   // ice caps
+    if (fbm(x * 0.04 + 31, y * 0.04, 3) > 0.82) {          // cloud wisps
+      d[i] = U.lerp(d[i], 255, 0.55); d[i + 1] = U.lerp(d[i + 1], 255, 0.55); d[i + 2] = U.lerp(d[i + 2], 255, 0.55);
+    }
+    d[i + 3] = 255;
+  }
+  ctx.putImageData(img, 0, 0);
+  return canvasTex(c);
+}
+
+function paintTundra(base, mid, dark) {
+  const c = makeCanvas(512, 256), ctx = c.getContext('2d');
+  const img = ctx.createImageData(512, 256), d = img.data;
+  for (let y = 0; y < 256; y++) for (let x = 0; x < 512; x++) {
+    const n = fbm(x * 0.025, y * 0.035, 4);
+    const i = (y * 512 + x) * 4;
+    let k = U.clamp(n * 1.3 - 0.1, 0, 1);                  // rock pushes through snow
+    let r = U.lerp(base[0], mid[0], k), g = U.lerp(base[1], mid[1], k), b = U.lerp(base[2], mid[2], k);
+    if (fbm(x * 0.05 + 9, y * 0.05, 3) > 0.8) {            // thawed tundra patches
+      const t = U.clamp((fbm(x * 0.05 + 9, y * 0.05, 3) - 0.8) * 3, 0, 1);
+      r = U.lerp(r, dark[0], t); g = U.lerp(g, dark[1], t); b = U.lerp(b, dark[2], t);
+    }
+    d[i] = r; d[i + 1] = g; d[i + 2] = b; d[i + 3] = 255;
+  }
+  ctx.putImageData(img, 0, 0);
+  // frozen shear cracks
+  ctx.strokeStyle = 'rgba(30,60,80,.5)'; ctx.lineWidth = 1;
+  for (let i = 0; i < 20; i++) {
+    let x = U.rand(0, 512), y = U.rand(0, 256);
+    ctx.beginPath(); ctx.moveTo(x, y);
+    for (let s = 0; s < 11; s++) { x += U.rand(-18, 18); y += U.rand(-7, 7); ctx.lineTo(x, y); }
+    ctx.stroke();
+  }
+  return canvasTex(c);
+}
+
+/* UPGRADE(content v1.8.1): two more biome signatures for the 20 → 30 sector
+   roster. ASHEN — cooled basalt plates with glowing ember fissures (a world
+   that burned and is still cooling). MAGNETAR — banded plasma laced with
+   neon field lines, deliberately the highest-contrast body in the game. */
+function paintAshen(base, mid, ember) {
+  const c = makeCanvas(512, 256), ctx = c.getContext('2d');
+  const img = ctx.createImageData(512, 256), d = img.data;
+  for (let y = 0; y < 256; y++) for (let x = 0; x < 512; x++) {
+    const n = fbm(x * 0.02, y * 0.02, 5);
+    const plate = fbm(x * 0.065 + 31, y * 0.065, 3);        // cracked basalt plates
+    const i = (y * 512 + x) * 4;
+    const k = U.clamp(n * 1.3 - 0.12, 0, 1);
+    let r = U.lerp(base[0], mid[0], k), g = U.lerp(base[1], mid[1], k), b = U.lerp(base[2], mid[2], k);
+    const fissure = U.clamp((plate - 0.62) * 5.2, 0, 1);     // ember seams between plates
+    if (fissure > 0) {
+      r = U.lerp(r, ember[0], fissure); g = U.lerp(g, ember[1], fissure); b = U.lerp(b, ember[2], fissure);
+    }
+    d[i] = r; d[i + 1] = g; d[i + 2] = b; d[i + 3] = 255;
+  }
+  ctx.putImageData(img, 0, 0);
+  // ash fallout speckle so the plates never read as flat rock
+  ctx.globalAlpha = 0.09;
+  for (let i = 0; i < 420; i++) {
+    ctx.fillStyle = Math.random() > 0.6 ? '#e8e0d8' : '#20191a';
+    ctx.fillRect(U.randi(0, 511), U.randi(0, 255), U.randi(1, 4), 1);
+  }
+  ctx.globalAlpha = 1;
+  return canvasTex(c);
+}
+
+function paintMagnetar(base, mid, glow) {
+  const c = makeCanvas(1024, 512), ctx = c.getContext('2d');
+  for (let y = 0; y < 512; y++) {
+    const n = fbm(0.4, y * 0.05, 4);
+    const band = 0.5 + 0.34 * Math.sin(y * 0.07 + n * 6.2) + 0.12 * Math.sin(y * 0.017 + 2.3);
+    const k = U.clamp(band, 0, 1);
+    const A = k < 0.5 ? base : mid, B = k < 0.5 ? mid : glow, t = k < 0.5 ? k * 2 : (k - 0.5) * 2;
+    ctx.fillStyle = `rgb(${(U.lerp(A[0], B[0], t)) | 0},${(U.lerp(A[1], B[1], t)) | 0},${(U.lerp(A[2], B[2], t)) | 0})`;
+    ctx.fillRect(0, y, 1024, 1);
+  }
+  // field lines: long glowing meridians, brightest where they cross a band
+  ctx.lineWidth = 1.4;
+  for (let i = 0; i < 26; i++) {
+    const x0 = U.rand(0, 1024);
+    ctx.strokeStyle = `rgba(${glow[0] | 0},${glow[1] | 0},${glow[2] | 0},${U.rand(0.10, 0.3).toFixed(2)})`;
+    ctx.beginPath();
+    let x = x0;
+    ctx.moveTo(x, -8);
+    for (let y = 0; y <= 512; y += 26) { x += U.rand(-16, 16); ctx.lineTo(x, y); }
+    ctx.stroke();
+  }
+  // polar caps stay dark: the field concentrates at the equator
+  const g = ctx.createLinearGradient(0, 0, 0, 512);
+  g.addColorStop(0, 'rgba(0,0,0,.55)'); g.addColorStop(0.2, 'rgba(0,0,0,0)');
+  g.addColorStop(0.8, 'rgba(0,0,0,0)'); g.addColorStop(1, 'rgba(0,0,0,.55)');
+  ctx.fillStyle = g; ctx.fillRect(0, 0, 1024, 512);
+  return canvasTex(c);
+}
+
 
 /* city lights: dark canvas + warm speckle clusters (matches continents
    loosely by seeding clusters from the same fbm — good enough at distance) */
@@ -1426,27 +1698,37 @@ function addPlanet(opts) {
     G.world.syncPairs.push({ a: mesh, b: shell });
   }
 
-  // thin atmosphere rim (fresnel shell — glows at the limb, black at center)
+  /* thin atmosphere rim (fresnel shell — glows at the limb, black at center).
+     UPGRADE(graphics v1.8.1): the rim is now LIVE — a slow latitudinal band
+     drifts across the shell and the whole limb shimmers a little, so a planet
+     reads as weather rather than a static decal. uTime is advanced by
+     World.update (see the planet loop) — one uniform write per planet/frame. */
   if (opts.atmo) {
     const atmoMat = new THREE.ShaderMaterial({
-      uniforms: { uColor: { value: new THREE.Color(opts.atmo) } },
+      uniforms: { uColor: { value: new THREE.Color(opts.atmo) }, uTime: { value: 0 } },
       vertexShader: `
-        varying vec3 vN; varying vec3 vV;
+        varying vec3 vN; varying vec3 vV; varying float vY;
         void main(){
           vN = normalize(normalMatrix * normal);
+          vY = (modelMatrix * vec4(position, 1.0)).y;
           vec4 mv = modelViewMatrix * vec4(position, 1.0);
           vV = normalize(-mv.xyz);
           gl_Position = projectionMatrix * mv;
         }`,
       fragmentShader: `
-        uniform vec3 uColor; varying vec3 vN; varying vec3 vV;
+        uniform vec3 uColor; uniform float uTime;
+        varying vec3 vN; varying vec3 vV; varying float vY;
         void main(){
           float rim = pow(1.0 - abs(dot(vN, vV)), 3.2);
-          gl_FragColor = vec4(uColor * rim * 1.25, rim);
+          // traveling band + soft shimmer: the limb thickens and thins
+          float band = 0.5 + 0.5 * sin(vY * 0.0022 - uTime * 0.32);
+          float shimmer = 0.9 + 0.1 * sin(uTime * 0.83 + rim * 7.0);
+          gl_FragColor = vec4(uColor * rim * (1.18 + 0.3 * band) * shimmer, rim);
         }`,
       transparent: true, blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.FrontSide,
     });
     group.add(new THREE.Mesh(new THREE.SphereGeometry(opts.radius * 1.045, 48, 32), atmoMat));
+    group.userData.atmoMat = atmoMat;
   }
 
   // ring system — RingGeometry UVs are planar; remap them to (r, 0.5) so
@@ -1468,7 +1750,7 @@ function addPlanet(opts) {
   }
 
   G.scene.add(group);
-  const planet = { group, mesh, opts, spin: opts.spin || 0.004 };
+  const planet = { group, mesh, opts, spin: opts.spin || 0.004, drift: opts.drift || 0 };
   G.world.planets.push(planet);
   // collision proxy (generous — nobody should be flying into these anyway)
   G.world.colliders.push({ x: opts.pos.x, y: opts.pos.y, z: opts.pos.z, r: opts.radius * 1.05, planet: true });
@@ -1923,7 +2205,10 @@ function buildHulk(pos) {
   for (const z of [-14, 0, 13]) {
     colliders.push({ x: pos.x + z * Math.sin(g.rotation.y), y: pos.y, z: pos.z + z * Math.cos(g.rotation.y), r: 6.5 });
   }
-  return { group: g, colliders, tumbleAxis: U.randomDir(new THREE.Vector3()), tumbleSpd: U.rand(0.02, 0.06) };
+  // salvaged: consumed by the Wrecks salvage pass (§6); the radar blip and
+  // the beacon read it, so it belongs to the hulk, not to the caller.
+  return { group: g, colliders, beacon: null, salvaged: false,
+    tumbleAxis: U.randomDir(new THREE.Vector3()), tumbleSpd: U.rand(0.02, 0.06) };
 }
 
 /* ---------------- space dust (the #1 speed cue) ----------------
@@ -2019,9 +2304,11 @@ const World = {
   },
 
   /* ============ CAMPAIGN: per-map backdrop ============ */
-  /* Each Adventure map defines a hero planet (reusing the existing texture
-     painters with new palette params — no new painters) plus a sky tint for
-     the nebula sprites. Called with null restores the stock endless sky. */
+  /* Each Adventure map defines a hero planet (texture painters: rocky/ice/
+     gas/terran plus the v1.8 biome set lava/toxic/crystal/desert/ocean/tundra)
+     plus a sky tint for the nebula sprites. Called with null restores the
+     stock endless sky. */
+
   setHeroPlanet(def) {
     if (this.heroPlanet) {
       const hp = this.heroPlanet;
@@ -2041,10 +2328,20 @@ const World = {
       this.heroPlanet = null;
     }
     if (!def) return;
+    const P = def.palette || [];
     const map = def.painter === 'gas' ? paintGasGiant(def.palette)
-      : def.painter === 'rocky' ? paintRocky(def.palette[0], def.palette[1], def.palette[2])
+      : def.painter === 'rocky' ? paintRocky(P[0], P[1], P[2])
       : def.painter === 'ice' ? paintIce()
+      : def.painter === 'lava' ? paintLava(P[0], P[1], P[2])
+      : def.painter === 'toxic' ? paintToxic(P[0], P[1], P[2])
+      : def.painter === 'crystal' ? paintCrystal(P[0], P[1], P[2])
+      : def.painter === 'desert' ? paintDesert(P[0], P[1], P[2])
+      : def.painter === 'ocean' ? paintOcean(P[0], P[1], P[2])
+      : def.painter === 'tundra' ? paintTundra(P[0], P[1], P[2])
+      : def.painter === 'ashen' ? paintAshen(P[0], P[1], P[2])
+      : def.painter === 'magnetar' ? paintMagnetar(P[0], P[1], P[2])
       : paintTerran();
+
     this.heroPlanet = addPlanet({
       pos: new THREE.Vector3(def.pos[0], def.pos[1], def.pos[2]),
       radius: def.radius, map,
@@ -2052,6 +2349,9 @@ const World = {
       ring: def.ring ? paintRing(def.ring, null) : null,
       ringTilt: def.ringTilt, atmo: def.atmo, tilt: def.tilt,
       bump: def.bump, spin: def.spin || 0.004,
+      // UPGRADE(graphics v1.8.1): banded bodies rotate their texture UVs a
+      // touch per second — cloud bands and field lines read as alive
+      drift: (def.painter === 'gas' || def.painter === 'magnetar') ? 0.006 : 0,
     });
   },
 
@@ -2061,7 +2361,7 @@ const World = {
   },
 
   /* ============ EXOTIC MAP HAZARDS ============
-     Two environmental mechanics the MAPS table declares and the campaign
+     Environmental mechanics the MAPS table declares and the campaign
      activates per arena (see Campaign._enterArena):
        BLACKHOLE — visual: photon ring + accretion disk + infalling
          particle stream. Physical: soft 1/d² pull on the player, enemies
@@ -2071,11 +2371,20 @@ const World = {
        NEBULA — layered volumetric-LOOKING cloud shells; radar range
          collapses to radarMult and telegraphed ion arcs strike near the
          player. Visibility itself is the cloud opacity.
+       IONSTORM (v1.8.1) — charged filaments + a canopy of arc nodes; the
+         sector's shields are offline (enforced by game.js via this flag),
+         so hull discipline and dodging replace bubble-tanking.
+       METEORS (v1.8.1) — periodic telegraphed volleys of burning rock from
+         the PROJ_STYLES 'meteor' pool; the player dodges, the rocks graze
+         asteroids and the arena geometry. Free-floating position checks.
      clearHazard() restores the stock arena. */
   setHazard(map) {
     this.clearHazard();
-    if (map && map.blackhole) this._buildBlackhole(map.blackhole);
-    if (map && map.nebula) this._buildNebula(map.nebula);
+    if (!map) return;
+    if (map.blackhole) this._buildBlackhole(map.blackhole);
+    if (map.nebula) this._buildNebula(map.nebula);
+    if (map.ionstorm) this._buildIonStorm(map.ionstorm || {});
+    if (map.meteors) this._buildMeteors(map.meteors || {});
   },
 
   clearHazard() {
@@ -2088,8 +2397,44 @@ const World = {
       this._hazardGroup = null;
     }
     this.blackhole = null; this.nebula = null;
+    this.ionstorm = null; this.meteors = null;
     this.radarFactor = 1; this.visibility = Infinity;
   },
+
+  _buildIonStorm(def) {
+    const g = new THREE.Group();
+    // charged cloud canopy: two ranks of violet/cyan blobs at mid distance
+    const tex = paintGlow('hsla(265,80%,62%,0.45)', 'hsla(265,90%,30%,0)');
+    for (let i = 0; i < 16; i++) {
+      const spr = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex,
+        blending: THREE.AdditiveBlending, depthWrite: false, transparent: true,
+        opacity: U.rand(0.10, 0.22) }));
+      U.randomDir(_v1).multiplyScalar(U.rand(1400, 2600));
+      spr.position.copy(_v1);
+      spr.scale.setScalar(U.rand(900, 1800));
+      g.add(spr);
+    }
+    // arc nodes: small bright tori that flicker — the visible "stores"
+    this._ionNodes = [];
+    for (let i = 0; i < 5; i++) {
+      const t = new THREE.Mesh(new THREE.TorusGeometry(7, 0.35, 6, 24),
+        new THREE.MeshBasicMaterial({ color: 0x7ad8ff, transparent: true, opacity: 0 }));
+      U.randomDir(_v1).multiplyScalar(U.rand(260, 760));
+      t.position.copy(_v1);
+      g.add(t);
+      this._ionNodes.push({ mesh: t, phase: U.rand(0, U.TAU) });
+    }
+    G.scene.add(g);
+    this._hazardGroup = g;
+    this.ionstorm = { intensity: def.intensity || 1, _flashT: 0 };
+  },
+
+  _buildMeteors(def) {
+    // dressing is minimal on purpose: the volley telegraphs live in
+    // _updateHazards; the rocks themselves are the spectacle.
+    this.meteors = { rate: def.rate || 1, _t: 5.5, _volley: 3 };
+  },
+
 
   _buildBlackhole(def) {
     const H = CFG.hazards.blackhole;
@@ -2267,6 +2612,55 @@ const World = {
       }
       if (nb._warn) nb._warn.mesh.material.opacity = 0.35 + 0.4 * Math.sin(performance.now() * 0.02);
     }
+    // ---- IONSTORM (v1.8.1): arc-node flicker + field flash. Gameplay
+    // (shields offline) is enforced in game.js by reading this flag. ----
+    const ion = this.ionstorm;
+    if (ion && this._ionNodes) {
+      ion._flashT -= dt;
+      if (ion._flashT <= 0) {
+        ion._flashT = U.rand(0.5, 1.6) / Math.max(0.4, ion.intensity);
+        FX.rings.spawn(G.player ? G.player.pos : _v1, 40, 0x7ad8ff, 0.35);
+        G.audio.zap();
+      }
+      for (const n of this._ionNodes) {
+        n.phase += dt * (0.8 + ion.intensity);
+        const a = 0.25 + 0.75 * Math.max(0, Math.sin(n.phase * 2.2)) * Math.sin(n.phase * 0.55 + 1.0);
+        n.mesh.material.opacity = a * 0.55;
+        n.mesh.rotation.y += dt * 0.6;
+        n.mesh.rotation.x = 1.2 + 0.5 * Math.sin(n.phase);
+      }
+    }
+    // ---- METEORS (v1.8.1): timed volleys of hazard rocks. A 2s alarm
+    // telegraphs each volley, then rocks ripple in from a random rim
+    // direction across the player's lane. No hp on purpose: the dodge IS
+    // the mechanic, and they graze asteroids and arena walls like natives.
+    const mt = this.meteors;
+    if (mt && G.player.alive && G.game.state === 'playing') {
+      mt._t -= dt;
+      if (mt._t <= 0) {
+        mt._volley = 3 + (Math.random() < 0.4 ? 1 : 0);
+        mt._volleyT = 0;
+        mt._t = (9 + U.rand(0, 5)) / Math.max(0.4, mt.rate);
+        G.hud.alert('METEOR VOLLEY INBOUND — 2s', 2, '#ffb46a');
+        G.audio.alarm();
+        // origin: a ring around the player, aimed to cross near them
+        U.randomDir(_v1).multiplyScalar(1400);
+        _v2.copy(G.player.pos).add(_v1);
+        mt._spawn = { base: _v2.clone(), dir: _v1.clone() };
+      }
+      if (mt._volley > 0 && mt._spawn && (mt._volleyT -= dt) <= 0) {
+        mt._volleyT = 0.09;   // 90ms ripples feed the "shower" feel
+        mt._volley--;
+        // spread the rocks left/right of the aim line (random rim jitter)
+        _v3.set(U.rand(-160, 160), U.rand(-120, 120), U.rand(-160, 160));
+        _v4.copy(mt._spawn.base).add(_v3);
+        _v1.copy(G.player.pos).add(_v3).sub(_v4);
+        _v1.normalize();
+        Projectiles.fire('meteor', 'enemy', _v4, _v1,
+          { speed: 160, dmg: 34, life: 9, scale: U.rand(1.1, 1.9) });
+        if (Math.random() < 0.5) FX.rings.spawn(_v4, 14, 0xff8a4a, 0.3);
+      }
+    }
   },
 
   /* segment sweep vs static colliders (stations, hulks, planets) */
@@ -2297,6 +2691,9 @@ const World = {
     // planets spin; city-shell & ring meshes stay glued to them
     for (const p of this.planets) {
       p.mesh.rotation.y += p.spin * dt;
+      // UPGRADE(graphics v1.8.1): live atmosphere shell + banded-body drift
+      if (p.group.userData.atmoMat) p.group.userData.atmoMat.uniforms.uTime.value += dt;
+      if (p.drift > 0 && p.mesh.material.map) p.mesh.material.map.offset.y -= p.drift * dt;
       if (p.group.userData.ringMesh) p.group.userData.ringMesh.rotation.z += 0.008 * dt;
     }
     for (const pair of this.syncPairs) pair.b.rotation.y = pair.a.rotation.y;
@@ -2328,6 +2725,135 @@ const World = {
     this.boundaryPulse = Math.max(this.boundaryPulse * (1 - dt), over);
     this.boundaryMesh.material.opacity = 0.04 + this.boundaryPulse *
       (0.12 + 0.1 * Math.sin(performance.now() * 0.006));
+  },
+};
+
+/* ============================================================
+   [SECTION 7c] WRECKS — derelict salvage interaction (CFG.wrecks)
+   ------------------------------------------------------------
+   The three derelict HULKS shipped as pure set dressing (cover with
+   collision), and CFG.wrecks + the #wreck-progress / #wreck-fill DOM
+   shipped beside them with no code behind any of it. This is the
+   missing half: fly inside `radius` of a derelict, hold the interact
+   key for `holdTime`, and the hold resolves ONCE per hulk —
+     · hazardChance  a rigged hull: dormant ordnance wakes up
+     · intelChance   a log entry + the salvage bounty
+     · otherwise     a real pickup drop + the salvage bounty
+   A successful salvage always pays `scoreBonus` and consumes the wreck
+   (beacon out, radar blip gone). A sprung trap does NOT consume it —
+   clear the ordnance and the salvage is still there.
+   Each hulk carries a shared emissive BEACON so a wreck reads as
+   interactive from across the arena instead of as more cover.
+============================================================ */
+const Wrecks = {
+  el: null, fill: null, label: null,
+  idx: -1,          // hulk index currently in range (-1 = none in range)
+  hold: 0,          // seconds of sustained hold on `idx`
+  _beaconMat: null,
+
+  init() {
+    this.el = document.getElementById('wreck-progress');
+    this.fill = document.getElementById('wreck-fill');
+    this.label = this.el ? this.el.querySelector('.wp-label') : null;
+    // one shared material: the beacons pulse together, so they cost a single
+    // uniform write per frame instead of one per wreck
+    this._beaconMat = new THREE.MeshBasicMaterial({ color: new THREE.Color(1.5, 1.15, 0.35) });
+    const core = new THREE.OctahedronGeometry(1.5, 0);
+    const ring = new THREE.TorusGeometry(3.1, 0.14, 4, 16);
+    for (const h of G.world.hulks) {
+      const b = new THREE.Group();
+      b.add(new THREE.Mesh(core, this._beaconMat));
+      const r = new THREE.Mesh(ring, this._beaconMat);
+      r.rotation.x = Math.PI / 2;
+      b.add(r);
+      b.position.set(0, 7.5, 0);   // clears the spine and the torn plates
+      h.group.add(b);
+      h.beacon = b;
+    }
+  },
+
+  /* a fresh run restores every derelict (salvage is per-run progress) */
+  reset() {
+    for (const h of G.world.hulks) {
+      h.salvaged = false;
+      if (h.beacon) h.beacon.visible = true;
+    }
+    this.idx = -1; this.hold = 0;
+    this._hide();
+  },
+
+  _show() { if (this.el && this.el.style.display !== 'block') this.el.style.display = 'block'; },
+  _hide() { if (this.el && this.el.style.display !== 'none') this.el.style.display = 'none'; },
+
+  update(dt) {
+    if (this._beaconMat) {
+      // slow throb; the >1 color range is what the bloom pass picks up
+      const k = 0.72 + 0.4 * Math.sin(performance.now() * 0.004);
+      this._beaconMat.color.setRGB(1.55 * k, 1.2 * k, 0.4 * k);
+    }
+    if (G.game.state !== 'playing' || !G.player.alive) { this.idx = -1; this.hold = 0; this._hide(); return; }
+
+    const p = G.player, C = CFG.wrecks;
+    const hulks = G.world.hulks;
+    let best = -1, bestD = C.radius * C.radius;
+    for (let i = 0; i < hulks.length; i++) {
+      const h = hulks[i];
+      if (h.salvaged) continue;
+      const d = h.group.position.distanceToSquared(p.pos);
+      if (d < bestD) { bestD = d; best = i; }
+    }
+    if (best !== this.idx) { this.idx = best; this.hold = 0; }   // swapping wrecks restarts the hold
+    if (best < 0) { this._hide(); return; }
+    const h = hulks[best];
+
+    /* Touch has no interact key, so the hold runs itself once you are in
+       range: the meter still gates the reward on staying put (and the
+       prompt tells you so). Every other input path holds the key. */
+    const holding = G.input.touch || G.input.key(C.key);
+    this.hold = holding ? this.hold + dt : Math.max(0, this.hold - dt * 2);
+
+    this._show();
+    if (this.label) {
+      const txt = G.input.touch ? 'SALVAGING — HOLD STATION'
+        : 'HOLD [' + C.key.replace('Key', '') + '] — SALVAGE';
+      if (this.label.textContent !== txt) this.label.textContent = txt;
+    }
+    if (this.fill) this.fill.style.width = Math.min(100, (this.hold / C.holdTime) * 100) + '%';
+    if (this.hold >= C.holdTime) this._resolve(h);
+  },
+
+  _resolve(h) {
+    const C = CFG.wrecks;
+    const pos = h.group.position.clone();   // FX/score/sound all keep a ref: clone, don't alias
+    this.hold = 0;
+    if (Math.random() < C.hazardChance) {
+      /* TRAP — the hull was rigged. Ordnance is spawned AROUND the wreck
+         (not bolted to it: the wreck tumbles, a mounted turret would drift
+         off its own mount). The wreck itself stays salvageable. */
+      for (let i = 0; i < 2; i++) {
+        _v1.set(U.rand(-1, 1), U.rand(-0.6, 0.6), U.rand(-1, 1)).normalize().multiplyScalar(U.rand(14, 24));
+        G.enemies.spawnMine(_v1.add(pos));
+      }
+      G.hud.alert('BOOBY TRAP — HOSTILE ORDNANCE', 3, '#ff5a3c');
+      Radio.note('RADIO: Trap! That hull was rigged — break off.', true);
+      FX.rings.spawn(pos, 40, 0xff6a3c, 0.7);
+      G.audio.alarm();
+      return;
+    }
+    h.salvaged = true;
+    if (h.beacon) h.beacon.visible = false;
+    this.idx = -1;
+    this._hide();
+    G.game.addScore(C.scoreBonus, pos, 'DERELICT SALVAGED');
+    FX.rings.spawn(pos, 26, 0xffc857, 0.45);
+    if (Math.random() < C.intelChance) {
+      Radio.line('wreckFound', 0);            // "…derelict log cracked"
+      G.hud.pop(pos, 'INTEL RECOVERED', 'gold');
+    } else {
+      G.pickups.spawnRandom(pos);
+      Radio.say('wreckFound', { cd: 6 });
+    }
+    G.audio.pickup();
   },
 };
 
@@ -2536,6 +3062,71 @@ function displaceVertices(geo, amp, freq) {
 
 
 
+/* cheap collar ring for PLAYER engine hardware: 4 radial segments read as a
+   machined ring at hull scale for a third of the cost of HULL.rim's round
+   torus. Engines are the one place the player hull repeats the same hardware
+   up to four times, so the budget goes to the silhouette, not the tube.
+   (HULL.* stays untouched — every enemy class shares it.) */
+function kitRing(r, x, y, z, rot, t = 0.05, seg = 12) {
+  return { geo: new THREE.TorusGeometry(r, t, 4, seg), pos: [x, y, z], rot };
+}
+
+/* PLAYER SHIP KITS — one structural kit per chassis so the three ships are
+   DISTINCT MODELS, not scaled copies. Each kit fixes: wing planform (shape
+   space +X = span, +Y = forward; sweep is applied on top), wing thickness
+   (extrude depth mult), engine layout (x = lateral offset, y = vertical,
+   s = nozzle scale, nacR = nacelle radius, single = centreline mount) and tail
+   config. The CFG.chassis mesh params still multiply on top (span/sweep/nose/
+   fin/engine scale).
+   UPGRADE(graphics v1.8.2): every kit also carries the SECTION numbers
+   _buildMesh needs for the body (spine/canopy/chine/keel/strake/pod), so the
+   chassis differ in STRUCTURE and not just in span: IX-3 = razor delta, thin
+   section, one centre nozzle, blade spine; VL-9 = standard fighter frame, twin
+   ventral strakes, wingtip pods; HT-8 = broad slab, quad nacelles, armoured
+   spine with plate bands. */
+const PLAYER_KITS = {
+  interceptor: {
+    wing: [[0, 1.22], [2.95, -0.08], [3.18, -0.5], [2.78, -0.85], [0, -1.18]],
+    thick: 0.62,                                  // razor: thin section
+    engines: [{ x: 0, y: -0.02, s: 1.06, nacR: 0.42, single: true }],
+    tail: 'razor',
+    /* blade ridge instead of a box spine — the knife reads all the way back */
+    spine: { w: 0.3, h: 0.22, len: 3.0, y: 0.44, z: 0.6, run: 2.2, blade: 0.46, bladeLen: 2.0 },
+    canopy: { x: 0.3, y: 0.24, z: 0.86, py: 0.32, pz: -1.15, hoop: 0.3 },
+    chine: { w: 0.05, h: 0.14, len: 2.9, x: 0.44, y: -0.05, z: 0.35, rot: 0.3 },
+    keel: { w: 0.24, t: 0.07, len: 2.5, y: -0.4, z: 0.95 },
+    strake: { w: 0.08, h: 0.28, len: 1.3, x: 0.5, y: -0.15, z: 1.0, rot: 0.14 },
+    pod: { r: 0.1, len: 1.8, y: -0.05, ring: 0.12, fin: 0.6 },
+  },
+  gunship: {
+    wing: [[0, 1.1], [2.5, -0.3], [2.78, -0.72], [2.5, -0.95], [0, -1.35]],
+    thick: 1,
+    engines: [{ x: 0.62, y: -0.02, s: 1, nacR: 0.4 }],
+    tail: 'stab',
+    spine: { w: 0.44, h: 0.32, len: 3.4, y: 0.52, z: 0.6, run: 2.6 },
+    canopy: { x: 0.36, y: 0.28, z: 0.92, py: 0.4, pz: -1.2, hoop: 0.46, bow: true },
+    chine: { w: 0.06, h: 0.18, len: 2.5, x: 0.46, y: -0.06, z: 0.3, rot: 0.26 },
+    keel: { w: 0.3, t: 0.08, len: 2.4, y: -0.48, z: 0.9 },
+    strake: { w: 0.11, h: 0.34, len: 1.6, x: 0.46, y: -0.18, z: 0.9, rot: 0.12 },
+    pod: { r: 0.13, len: 1.6, y: -0.06, ring: 0.16, fin: 0.6 },
+  },
+  heavy: {
+    wing: [[0, 0.85], [1.95, -0.1], [2.12, -0.4], [1.9, -0.66], [0, -1.0]],
+    thick: 1.7,                                   // broad slab section
+    engines: [{ x: 0.6, y: -0.02, s: 1, nacR: 0.5 }, { x: 1.42, y: -0.1, s: 0.88, nacR: 0.42 }],
+    tail: 'twin',
+    /* armoured spine: wide slab + bolted plate bands across it */
+    spine: { w: 0.62, h: 0.3, len: 3.0, y: 0.5, z: 0.7, run: 2.0, bands: 3, studs: true },
+    canopy: { x: 0.5, y: 0.2, z: 0.84, py: 0.34, pz: -1.05, hoop: 0.34, brow: true },
+    chine: { w: 0.09, h: 0.3, len: 2.4, x: 0.5, y: -0.06, z: 0.3, rot: 0.2 },
+    keel: { w: 0.5, t: 0.12, len: 2.8, y: -0.62, z: 0.95 },
+    strake: { w: 0.16, h: 0.4, len: 1.8, x: 0.5, y: -0.26, z: 0.85, rot: 0.1 },
+    /* shoulder armour: the broad-slab tell that flanks the spine */
+    shoulder: { w: 0.22, h: 0.22, len: 2.6, x: 0.4, y: 0.5, z: 0.8, rot: 0.14 },
+    pod: { r: 0.16, len: 1.9, y: -0.06, ring: 0.2, fin: 0.5 },
+  },
+};
+
 class Player {
   constructor() {
     // ---- kinematic state ----
@@ -2546,6 +3137,7 @@ class Player {
     this.extraRoll = 0;                          // wheel-impulse roll momentum
     this.radius = CFG.combat.playerRadius;   // hull collision sphere
     // ---- combat state (ship stats applied in reset(); safe default) ----
+    this.chassisKey = CFG.chassisDefault;
     this.ship = CFG.chassis[CFG.chassisDefault];
     this.maxHull = CFG.combat.hull;
     this.maxShield = CFG.combat.shield;
@@ -2575,83 +3167,204 @@ class Player {
     this.wellT = 0;   // gravity-well exposure timer (0..0.25s)
     this.recoil = 0;
     this.vulnT = 0;            // >0: shields offline + thrust choked (overcharge dump)
-    // shard Momentum Burst stacks
-    this._shardStacks = 0; this._shardWindow = 0;
+    // shard Momentum Burst stacks + spray phase (FIX: undefined phase made
+    // the FIRST shard shot of a session fire 6 of 7 pellets with NaN
+    // velocity — they never hit anything)
+    this._shardStacks = 0; this._shardWindow = 0; this._shardPhase = 0;
     // skills (blink / overdrive unlock via utility upgrades)
     this.skillUnlocked = { flare: true, nova: true, blink: false, overdrive: false };
     this.blinkCd = 0; this.odCd = 0;
     this._buildMesh();
   }
 
-  /* ---------- procedural ship: VL-9 KESTREL (mark 2) ----------
-     REBUILT (visual quality pass): tapered octagonal fuselage, framed
-     canopy, dorsal spine with running accent, sculpted swept wings
-     (extruded shapes with beveled edges — no more slabs), wingtip
-     fins + nav strobes, underwing missile racks, and layered twin
-     engines (nacelle → nozzle → hot core → bloom disc). Same anchor
-     contract as before: muzzles[] at the wingtip pods, enginePts[] /
-     engGlow[] at the nozzles, cockpit struts for the fp frame — so
-     nothing outside _buildMesh had to change. */
+  /* ---------- procedural ship: 3 chassis, ONE design language ----------
+     Every hull is built in three material tiers (lit plate / recessed
+     shadow metal / functional emissive) and dressed by a mirror-symmetric
+     detail pass — panel insets, spine/keel/chine, framed canopy, wingtip
+     pods, control surfaces, nacelle + nozzle ring + hot core + bloom disc,
+     and a tail per kit (see the PLAYER SHIP KITS above).
+     CFG.chassis[].mesh actually drives the silhouette: it used to be
+     dead config, so all three chassis rendered identically.
+     UPGRADE(graphics v1.8.2) — MODEL REWORK: the kits now carry body
+     SECTION numbers, so STRUCTURE (not just span) tells the chassis apart:
+     IX-3 razor delta, blade spine, one centre nozzle; VL-9 standard fighter
+     frame, twin ventral strakes, wingtip pods; HT-8 broad slab, quad
+     nacelles, banded armoured spine. Every static part is collected as a
+     geometry DESCRIPTOR and merged once per tier (was ~40 single-primitive
+     meshes), so the extra detail costs triangles but not draw calls; those
+     four merged geometries are what _rebuildMesh disposes. */
   _buildMesh() {
+    const M = Object.assign({ fuselage: 1, wingSpan: 1, wingSweep: 1, nose: 1, finSize: 1, engineScale: 1 },
+      (this.ship && this.ship.mesh) || {});
+    this._builtChassis = this.chassisKey;
+    this._wingMountX = 2.05 * M.wingSpan;      // refit hardpoints ride the wing
+    const K = PLAYER_KITS[this.chassisKey] || PLAYER_KITS.gunship;
+    const W = K.wing;
+    const SP = K.spine, CN = K.canopy, CH = K.chine, KL = K.keel, ST = K.strake, PD = K.pod, SH = K.shoulder;
+
     const g = new THREE.Group();               // physics root (position/quaternion)
     const model = new THREE.Group();           // cosmetic bank/recoil child
     g.add(model);
-    // two-tone livery: gunmetal frame, light panels, hot orange accents
-    const gunmetal = new THREE.MeshStandardMaterial({ color: 0x39424e, metalness: 0.85, roughness: 0.4 });
-    const panels = new THREE.MeshStandardMaterial({ color: 0x76818d, metalness: 0.45, roughness: 0.55, side: THREE.DoubleSide });
-    const darker = new THREE.MeshStandardMaterial({ color: 0x1d232b, metalness: 0.7, roughness: 0.6 });
-    const accent = new THREE.MeshStandardMaterial({ color: 0x35271a, emissive: 0xff9a3c, emissiveIntensity: 1.2, roughness: 0.5 });
+    /* ---- the three tiers (player livery: graphite frame, alloy panels,
+       amber service trim — the same grammar the whole fleet uses, painted
+       from the hangar's equipped livery when one is owned) ---- */
+    const LIV = (typeof Meta !== 'undefined' && Meta.liveryColors)
+      ? Meta.liveryColors() : { base: 0x333c48, panel: 0x8a939c, accent: 0xff9a3c };
+    this._builtLivery = LIV.id || 'factory';
+    const gunmetal = new THREE.MeshStandardMaterial({ color: LIV.base, metalness: 0.82, roughness: 0.42, envMapIntensity: 1.15 });
+    const panels = new THREE.MeshStandardMaterial({ color: LIV.panel, metalness: 0.5, roughness: 0.44, side: THREE.DoubleSide, envMapIntensity: 1.1 });
+    const darker = HULL.recess(0x151a21);
+    const accent = HULL.strip(LIV.accent, 1.2);
+    const glass = new THREE.MeshStandardMaterial({
+      color: 0x0d141c, metalness: 0.9, roughness: 0.1, emissive: 0x11384a, emissiveIntensity: 0.6 });
+
+    /* Lit-plate / panel / recess / emissive descriptors accumulate here and
+       are merged once at the end (one mesh per tier). Only parts that MOVE
+       or are read by name stay individual objects: the wing planforms
+       (mirrored by a negative X scale), nav strobes, engine discs + nozzle
+       anchors, muzzle + RCS anchors, missile doors, the lance coil and the
+       cockpit. */
+    const litP = [], panelP = [], recessP = [], trimP = [];
+
+    const fw = M.fuselage;                              // girth multiplier (every section part)
+    const span = M.wingSpan, sweepAft = (M.wingSweep - 1) * 0.8;
+    const tipX = (W[2][0] - 0.16) * span;               // wingtip line: pods + muzzle anchors
+    const wingDepth = 0.1 * (1 + (fw - 1) * 0.6) * K.thick;   // wing section thickness (kit)
+    const wingTop = -0.04 + wingDepth;                  // plate surfaces ride the real wing top
 
     // ---- fuselage: tapered octagon, nose to stern ----
-    const fus = new THREE.Mesh(new THREE.CylinderGeometry(0.3, 0.56, 4.3, 8), gunmetal);
-    fus.rotation.x = -Math.PI / 2;             // +Y (top radius) → -Z nose
-    model.add(fus);
-    const nose = new THREE.Mesh(new THREE.ConeGeometry(0.3, 1.7, 8), panels);
-    nose.rotation.x = -Math.PI / 2; nose.position.z = -3.0;
-    model.add(nose);
-    const needle = new THREE.Mesh(new THREE.CylinderGeometry(0.03, 0.05, 1.1, 6), darker);
-    needle.rotation.x = -Math.PI / 2; needle.position.z = -4.0;
-    model.add(needle);
+    litP.push(HULL.cyl(0.3, 0.56, 4.3, 8, [0, 0, 0], [-Math.PI / 2, 0, 0], [fw, 1, fw]));
+    const noseLen = 1.7 * M.nose;
+    panelP.push(HULL.cone(0.3 * fw, noseLen, 8, [0, 0, -2.15 - noseLen * 0.5], [-Math.PI / 2, 0, 0]));
+    recessP.push(HULL.cyl(0.03, 0.05, 1.1, 6, [0, 0, -2.15 - noseLen - 0.45], [-Math.PI / 2, 0, 0]));
+    // sensor spikes flanking the needle — the nose reads as a chevron
+    recessP.push(...HULL.mirrorAll([
+      HULL.cone(0.05, 0.8, 5, [0.17 * fw, 0.1, -2.6 - noseLen * 0.35], [Math.PI / 2, 0, 0]),
+    ]));
 
-    // ---- canopy: framed glass over the spine hump ----
-    const canopy = new THREE.Mesh(new THREE.SphereGeometry(0.46, 16, 12), new THREE.MeshStandardMaterial({
-      color: 0x0d141c, metalness: 0.9, roughness: 0.1, emissive: 0x11384a, emissiveIntensity: 0.6 }));
-    canopy.scale.set(0.78, 0.6, 2.0); canopy.position.set(0, 0.4, -1.2);
+    /* ---- canopy: framed glass, kit-sized (IX-3 teardrop, VL-9 bubble,
+       HT-8 low slab). ONE unit sphere scaled to the kit's half-extents, so
+       all three chassis share a cheap 10x8 tessellation instead of a hot
+       16x12 ball. ---- */
+    const canopy = new THREE.Mesh(new THREE.SphereGeometry(1, 10, 8), glass);
+    canopy.scale.set(CN.x * (0.5 + fw * 0.5), CN.y, CN.z);
+    canopy.position.set(0, CN.py, CN.pz);
     model.add(canopy);
-    for (const s of [-1, 1]) {                 // canopy side rails
-      const rail = new THREE.Mesh(new THREE.BoxGeometry(0.07, 0.09, 2.0), darker);
-      rail.position.set(s * 0.34, 0.52, -1.2);
-      model.add(rail);
+    /* glazing frame (recess tier): side rails + a bow hoop — glass with no
+       edge reads as a sticker, not a window */
+    recessP.push(...HULL.mirrorAll([HULL.box(0.06, 0.08, CN.z * 2.0, [CN.x * 0.9, CN.py + 0.05, CN.pz])]));
+    recessP.push(kitRing(CN.hoop, 0, CN.py - 0.01, CN.pz - CN.z * 0.55, [Math.PI / 2, 0, 0], 0.032, 12));
+    if (CN.bow) recessP.push(HULL.box(CN.x * 1.4, 0.05, 0.16, [0, CN.py + CN.y * 0.5, CN.pz + CN.z * 0.92]));
+    if (CN.brow) panelP.push(HULL.box(CN.x * 2.1 * fw, 0.09, CN.z * 0.9, [0, CN.py + CN.y * 0.75, CN.pz - CN.z * 0.15], [0.1, 0, 0]));
+
+    /* ---- dorsal spine: kit profile — IX-3 blade ridge, VL-9 box spine,
+       HT-8 armoured slab with bolted plate bands — + the running accent light ---- */
+    litP.push(HULL.box(SP.w * fw, SP.h, SP.len, [0, SP.y, SP.z]));
+    if (SP.blade) litP.push(HULL.box(0.06, SP.blade, SP.bladeLen, [0, SP.y + SP.blade * 0.5, SP.z + SP.len * 0.12]));
+    trimP.push(HULL.box(0.1, 0.06, SP.run, [0, SP.y + SP.h * 0.5 + 0.03, SP.z]));
+    if (SP.bands) {
+      for (let i = 0; i < SP.bands; i++) {
+        const bz = SP.z - SP.len * 0.5 + SP.len * ((i + 1) / (SP.bands + 1));
+        recessP.push(HULL.box(SP.w * fw * 1.08, SP.h * 1.15, 0.1, [0, SP.y, bz]));
+        if (SP.studs) recessP.push(...HULL.mirrorAll([HULL.box(0.08, 0.12, 0.16, [SP.w * fw * 0.42, SP.y + SP.h * 0.62, bz])]));
+      }
     }
 
-    // ---- dorsal spine + running accent ----
-    const spine = new THREE.Mesh(new THREE.BoxGeometry(0.44, 0.32, 3.4), darker);
-    spine.position.set(0, 0.52, 0.6); model.add(spine);
-    const runLight = new THREE.Mesh(new THREE.BoxGeometry(0.1, 0.06, 2.6), accent);
-    runLight.position.set(0, 0.7, 0.6); model.add(runLight);
-    // hull greebles — sensor dome, dorsal plates, underwing pylons:
-    // reads as a working warbird instead of a smooth toy
-    const dome = new THREE.Mesh(new THREE.SphereGeometry(0.14, 10, 8), darker);
-    dome.scale.set(1, 0.7, 1.3); dome.position.set(0, 0.63, -2.2); model.add(dome);
-    for (const s of [-1, 1]) {
-      const plate = new THREE.Mesh(new THREE.BoxGeometry(0.55, 0.06, 1.5), panels);
-      plate.position.set(s * 0.62, -0.02, -0.5);
-      model.add(plate);
-      const pylon = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.2, 1.1), gunmetal);
-      pylon.position.set(s * 1.5, -0.12, 0.9);
-      model.add(pylon);
+    /* ---- shoulder armour (HT-8 only): the broad slab that flanks the spine,
+       stitched from two raked plates per side — this is what makes the heavy
+       read as armoured rather than just fatter ---- */
+    if (SH) panelP.push(...HULL.mirrorAll([
+      HULL.box(SH.w * fw, SH.h, SH.len, [SH.x * fw, SH.y, SH.z], [0, 0, SH.rot]),
+      HULL.box(SH.w * fw * 1.02, SH.h * 0.45, SH.len * 0.25, [SH.x * fw * 1.06, SH.y + SH.h * 0.5, SH.z + SH.len * 0.3]),
+    ]));
+
+    // ---- chines: sharp waterline edges down the flank (thin-section tell),
+    // each shadowed by a recess inset just below it ----
+    panelP.push(...HULL.mirrorAll([HULL.box(CH.w, CH.h, CH.len, [CH.x * fw, CH.y, CH.z], [0, 0, CH.rot])]));
+    recessP.push(...HULL.mirrorAll([
+      HULL.panelLine(CH.w * 1.3, CH.len * 0.86, CH.x * fw + 0.01, CH.y - CH.h * 0.55, CH.z),
+    ]));
+    // ---- keel: armoured belly strake (deepest on the HT-8 slab) ----
+    litP.push(HULL.box(KL.w * fw, KL.t, KL.len, [0, KL.y, KL.z]));
+    // ---- ventral strakes: the VL-9's twin spite plates, kit-scaled ----
+    panelP.push(...HULL.mirrorAll([HULL.box(ST.w, ST.h, ST.len, [ST.x * fw, ST.y, ST.z], [0, 0, ST.rot])]));
+
+    /* ---- plate tier: deck plates, nose chevron, belly fairing, hip cheek
+       plates, shoulder plates ---- */
+    panelP.push(...HULL.mirrorAll([HULL.box(0.55 * fw, 0.06, 1.5, [0.62 * fw, -0.02, -0.5])]));
+    panelP.push(...HULL.chevron(0.3 * fw, 1.45, 0.44 * fw, 0.24, -1.95, 0.52));
+    panelP.push(HULL.box(0.6 * fw, 0.07, 2.6, [0, KL.y + KL.t * 0.5 + 0.035, 0.9]));
+    panelP.push(...HULL.mirrorAll([HULL.box(0.16, 0.32, 1.5, [0.7 * fw, -0.12, 1.5])]));
+    panelP.push(...HULL.mirrorAll([HULL.box(0.34, 0.05, 0.9, [0.5 * fw, wingTop + 0.05, -0.15])]));
+    /* ---- recess tier: hip intakes, panel breaks, sensor housing, braces ---- */
+    recessP.push(...HULL.mirrorAll([HULL.box(0.16, 0.3, 1.1, [0.62 * fw, 0.08, 0.7])]));
+    recessP.push(...HULL.mirrorAll([HULL.box(0.1, 0.22, 1.1, [0.5 * fw, -0.28, 2.1])]));
+    recessP.push(HULL.box(0.5, 0.14, 0.5, [0, 0.68, -2.35]));
+    recessP.push(HULL.sph(0.12, 8, [0, 0.76, -2.3], [1, 0.7, 1.4]));
+    recessP.push(HULL.box(0.5 * fw, 0.035, 1.9, [0, 0.36, 1.9]));
+    recessP.push(...HULL.mirrorAll([...HULL.strut(0.75, 1.05 * fw, -0.14, 2.35)]));
+    /* panel insets: a recess stripe down the spine top and a lit service plate
+       on each hip intake — the lit/shadow break that reads as plating.
+       (Insets must sit ON a surface: an inset floating in the air reads as a
+       glitch, which is why they hang off the spine and the intake blocks.) */
+    recessP.push(HULL.panelLine(SP.w * fw * 0.5, SP.len * 0.5, 0, SP.y + SP.h * 0.5 + 0.004, SP.z - SP.len * 0.08));
+    panelP.push(...HULL.mirrorAll([HULL.box(0.04, 0.16, 0.62, [0.62 * fw + 0.085, 0.06, 0.7])]));
+
+    /* greeble run: a panel break under each deck plate and bolt studs along
+       each chine — 12-triangle blocks that keep the plating readable at
+       close range without tempting the triangle budget */
+    recessP.push(...HULL.mirrorAll([HULL.panelLine(0.5 * fw, 1.3, 0.62 * fw, -0.055, -0.5)]));
+    for (let i = -1; i <= 1; i++) {
+      recessP.push(...HULL.mirrorAll([
+        HULL.box(0.07, 0.07, 0.1, [CH.x * fw + CH.w * 0.5, CH.y + 0.02, CH.z + i * CH.len * 0.28]),
+      ]));
     }
 
     // ---- sculpted swept wings (extruded trapezoids, beveled edges) ----
+    /* shape space: +X = span, +Y = forward. wingSpan stretches the span;
+       wingSweep slides the tip AFT along the span (real sweep, not a
+       uniform scale) so the three chassis read at a glance.
+       The planform itself comes from the per-chassis KIT — distinct
+       silhouettes instead of scaled copies (see PLAYER_KITS). */
+    const pts = W;
     const wingShape = new THREE.Shape();
-    wingShape.moveTo(0, 1.1);                  // root leading edge
-    wingShape.lineTo(2.5, -0.3);               // tip leading edge (swept back)
-    wingShape.lineTo(2.78, -0.72);             // tip point
-    wingShape.lineTo(2.5, -0.95);              // tip trailing edge
-    wingShape.lineTo(0, -1.35);                // root trailing edge
+    pts.forEach(([px, py], i) => {
+      const x = px * span, y = py - Math.max(0, px) * sweepAft;
+      if (i === 0) wingShape.moveTo(x, y); else wingShape.lineTo(x, y);
+    });
     wingShape.closePath();
     const wingGeo = new THREE.ExtrudeGeometry(wingShape, {
-      depth: 0.1, bevelEnabled: true, bevelThickness: 0.035, bevelSize: 0.035, bevelSegments: 1 });
+      depth: wingDepth, bevelEnabled: true, bevelThickness: 0.035, bevelSize: 0.035, bevelSegments: 1 });
+
+    /* wing surface hardware, placed ON the planform: a leading-edge heat
+       strip that follows the actual sweep angle + a root fillet plate.
+       (Floating axis-aligned boxes read as glitches, not detail.) */
+    {
+      const x0 = 0, y0 = W[0][1], x1 = W[1][0] * span, y1 = W[1][1] - W[1][0] * sweepAft;
+      const len = Math.hypot(x1 - x0, y1 - y0), ang = Math.atan2(y1 - y0, x1 - x0);
+      const mx = (x0 + x1) * 0.5, mz = -(y0 + y1) * 0.5;
+      trimP.push(...HULL.mirrorAll([HULL.box(len, 0.035, 0.16, [mx, wingTop + 0.005, mz], [0, ang, 0])]));
+      panelP.push(...HULL.mirrorAll([HULL.box(1.15 * span, 0.07, 0.5, [0.9 * span, wingTop - 0.015, -0.1])]));
+    }
+    /* control surfaces: an elevon on the inboard rear edge and an aileron
+       outboard. Both are DERIVED from the kit planform, so the hinge line
+       rides the real trailing edge on every chassis instead of a hard-coded Z. */
+    {
+      const seg = (a, b) => ({
+        len: Math.hypot((a[0] - b[0]) * span, a[1] - b[1]),
+        yaw: Math.atan2(-(a[1] - b[1]), (a[0] - b[0]) * span),
+        mx: (a[0] + b[0]) * 0.5 * span,
+        mz: -(a[1] + b[1]) * 0.5,
+      });
+      const ev = seg(W[3], W[4]), ai = seg(W[2], W[3]);
+      panelP.push(...HULL.mirrorAll([
+        HULL.box(ev.len * 0.62, 0.06, 0.34, [ev.mx * 0.55, wingTop + 0.02, ev.mz + 0.1], [0, ev.yaw, 0]),
+        HULL.box(ai.len * 0.72, 0.06, 0.3, [ai.mx, wingTop + 0.015, ai.mz + 0.09], [0, ai.yaw, 0]),
+      ]));
+      recessP.push(...HULL.mirrorAll([
+        HULL.panelLine(ev.len * 0.64, 0.07, ev.mx * 0.55, wingTop + 0.004, ev.mz - 0.03),
+      ]));
+    }
     this.navL = null; this.navR = null;
     for (const s of [-1, 1]) {
       const wing = new THREE.Mesh(wingGeo, panels);
@@ -2659,70 +3372,125 @@ class Player {
       wing.scale.x = s;                        // mirror; DoubleSide material
       wing.position.set(0, -0.04, 0.45);
       model.add(wing);
-      // wingtip fin + nav strobe
-      const fin = new THREE.Mesh(new THREE.BoxGeometry(0.08, 0.6, 0.95), gunmetal);
-      fin.position.set(s * 2.62, 0.26, 0.75); fin.rotation.z = s * -0.12;
-      model.add(fin);
-      const nav = new THREE.Mesh(new THREE.SphereGeometry(0.09, 8, 6),
+      // wingtip fin (kit chord, chassis finSize) + accent edge
+      litP.push(HULL.box(0.08, PD.fin * M.finSize, 0.95, [s * tipX, 0.26 * M.finSize, 0.75], [0, 0, s * -0.12]));
+      trimP.push(HULL.box(0.1, PD.fin * M.finSize * 0.8, 0.7, [s * tipX, 0.28 * M.finSize, 0.75], [0, 0, s * -0.12]));
+      const nav = new THREE.Mesh(new THREE.SphereGeometry(0.09, 6, 4),
         new THREE.MeshBasicMaterial({ color: s < 0 ? 0xff3040 : 0x30ff70 }));
-      nav.position.set(s * 2.72, 0.52, 0.72);
+      nav.position.set(s * tipX * 1.04, 0.5 * M.finSize, 0.72);
       model.add(nav);
       if (s < 0) this.navL = nav; else this.navR = nav;
-      // wingtip gun pod + emissive muzzle ring
-      const pod = new THREE.Mesh(new THREE.CylinderGeometry(0.13, 0.13, 1.6, 8), darker);
-      pod.rotation.x = -Math.PI / 2;
-      pod.position.set(s * 2.62, -0.06, -0.2);
-      model.add(pod);
-      const podTip = new THREE.Mesh(new THREE.CylinderGeometry(0.16, 0.16, 0.14, 8), accent);
-      podTip.rotation.x = -Math.PI / 2;
-      podTip.position.set(s * 2.62, -0.06, -0.95);
-      model.add(podTip);
+      /* wingtip pod: barrel + ringed muzzle + emissive tip, kit-sized (IX-3
+         slim gun line, VL-9 pod, HT-8 cannon). The barrel front sits at
+         z = -1.0 so the muzzle anchors below stay inside it. */
+      litP.push(HULL.cyl(PD.r, PD.r * 1.12, PD.len, 8, [s * tipX, PD.y, -1.0 + PD.len * 0.5], [Math.PI / 2, 0, 0]));
+      recessP.push(kitRing(PD.r * 1.15, s * tipX, PD.y, -1.0 + PD.len * 0.14, null, 0.035, 10));
+      trimP.push(HULL.cyl(PD.ring, PD.ring, 0.1, 8, [s * tipX, PD.y, -0.95], [Math.PI / 2, 0, 0]));
       // underwing missile rack (where the seekers live)
-      const rack = new THREE.Mesh(new THREE.BoxGeometry(0.3, 0.22, 1.3), darker);
-      rack.position.set(s * 1.7, -0.16, 0.75);
-      model.add(rack);
+      recessP.push(HULL.box(0.3, 0.22, 1.3, [s * 1.7 * span, -0.16, 0.75]));
     }
 
-    // ---- ventral fin + fuselage side intakes ----
-    const vfin = new THREE.Mesh(new THREE.BoxGeometry(0.1, 0.5, 1.15), gunmetal);
-    vfin.position.set(0, -0.45, 1.6); model.add(vfin);
-    for (const s of [-1, 1]) {
-      const intake = new THREE.Mesh(new THREE.BoxGeometry(0.18, 0.3, 1.1), darker);
-      intake.position.set(s * 0.62, 0.08, 0.7);
-      model.add(intake);
+    // ---- tail config + chassis flourishes (three distinct tails) ----
+    if (K.tail === 'razor') {
+      /* IX-3: a lone TALL dorsal razor fin flowing out of the spine blade +
+         canards with tip tabs + ventral fins — a knife, not a truck */
+      litP.push(HULL.box(0.07, 1.25 * M.finSize, 1.05, [0, 0.62 + 0.58 * M.finSize, 1.55]));
+      trimP.push(HULL.box(0.09, 1.1 * M.finSize, 0.9, [0, 0.62 + 0.58 * M.finSize, 1.55]));
+      panelP.push(...HULL.mirrorAll([
+        HULL.box(1.05, 0.05, 0.5, [0.78, 0.06, -1.55], [0, 0.34, 0]),
+        HULL.box(1.14, 0.045, 0.44, [0.86, -0.16, 1.42], [0, -0.26, 0.16]),
+        HULL.box(0.28, 0.05, 0.22, [1.18, 0.06, -1.68], [0, 0.34, 0]),
+        HULL.box(0.06, 0.42 * M.finSize, 0.8, [0.24, -0.52, 1.75], [0, 0, -0.1]),
+      ]));
+      recessP.push(...HULL.mirrorAll([HULL.panelLine(1.1, 0.06, 0.78, 0.09, -1.58, [0, 0.34, 0])]));
+    } else if (K.tail === 'twin') {
+      /* HT-8: twin dorsal slab fins with rudder hinges + cheek armour + side
+         nacelle cylinders + deep keel strakes — a slab */
+      litP.push(...HULL.mirrorAll([HULL.box(0.09, 0.95 * M.finSize, 1.15, [0.46, 1.0, 1.5])]));
+      trimP.push(...HULL.mirrorAll([HULL.box(0.1, 0.8 * M.finSize, 0.4, [0.46, 1.3, 1.9])]));
+      panelP.push(...HULL.mirrorAll([
+        ...HULL.weld(0.12, 0.42, 1.9, 0.66, 0.04, -1.1),
+        ...HULL.weld(0.1, 0.34, 1.4, 0.72, 0.16, 0.6),
+        HULL.cyl(0.19, 0.22, 2.1, 8, [0.78, 0.36, 0.55], [Math.PI / 2, 0, 0]),
+        HULL.box(0.12, 0.5 * M.finSize, 0.16, [0.46, 1.0, 0.98]),
+        HULL.box(0.12, 0.38 * M.finSize, 0.16, [0.46, 1.0, 2.02]),
+        HULL.box(0.08, 0.34, 1.5, [0.34, -0.72, 1.3]),
+      ]));
+      trimP.push(...HULL.mirrorAll([HULL.cyl(0.13, 0.13, 0.16, 8, [0.78, 0.36, -0.55], [Math.PI / 2, 0, 0])]));
+      recessP.push(...HULL.mirrorAll([HULL.panelLine(0.5, 2.6, 0.3, -0.5, 1.1)]));
+    } else {
+      /* VL-9: horizontal stabilizers with elevators + a ventral fin + a
+         rudder accent — the standard frame */
+      panelP.push(...HULL.mirrorAll([HULL.box(0.09, 0.07, 0.9, [0.6, 0.36, 2.2], [0, -0.04, 0.38])]));
+      recessP.push(...HULL.mirrorAll([HULL.panelLine(0.1, 0.34, 0.78, 0.38, 2.32, [0, -0.04, 0.38])]));
+      litP.push(HULL.box(0.1, 0.5 * M.finSize, 1.15, [0, -0.45, 1.6]));
+      trimP.push(HULL.box(0.12, 0.4 * M.finSize, 0.5, [0, -0.45, 1.9]));
     }
 
-    // ---- twin engines: nacelle → nozzle → hot core → bloom disc ----
-    // (core color > 1 so bloom ignites it; cosmetics mutate the shared
-    //  material for boost/overdrive tints exactly like the old discs)
+    // ---- engines: nacelle → rimmed nozzle → hot core → bloom disc ----
+    /* each kit carries its own layout — the IX-3's single CENTRE nozzle, the
+       VL-9's mid twins, the HT-8's staggered quad — so the stern reads as a
+       different machine per chassis. (Core color > 1 so bloom ignites it;
+       cosmetics mutate the shared material for boost/overdrive tints.) */
     this.engGlow = [];
     this.enginePts = [];
     const coreMat = new THREE.MeshBasicMaterial({ color: new THREE.Color(0.45, 1.6, 2.4) });
-    for (const s of [-1, 1]) {
-      const nac = new THREE.Mesh(new THREE.CylinderGeometry(0.4, 0.48, 2.0, 12), gunmetal);
-      nac.rotation.x = -Math.PI / 2; nac.position.set(s * 0.62, -0.02, 2.1);
-      model.add(nac);
-      const nozzle = new THREE.Mesh(new THREE.CylinderGeometry(0.44, 0.3, 0.4, 12), darker);
-      nozzle.rotation.x = -Math.PI / 2; nozzle.position.set(s * 0.62, -0.02, 3.15);
-      model.add(nozzle);
-      const core = new THREE.Mesh(new THREE.CylinderGeometry(0.24, 0.17, 0.3, 10), coreMat);
-      core.rotation.x = -Math.PI / 2; core.position.set(s * 0.62, -0.02, 3.42);
-      model.add(core);
-      const disc = new THREE.Mesh(new THREE.CircleGeometry(0.33, 16), coreMat);
-      disc.position.set(s * 0.62, -0.02, 3.55);
-      model.add(disc);
-      this.engGlow.push(disc);
-      const noz = new THREE.Object3D();
-      noz.position.set(s * 0.62, -0.02, 3.6);
-      model.add(noz);
-      this.enginePts.push(noz);
+    const es = M.engineScale, nb = 1 + (es - 1) * 0.55;   // pods stay slim; nozzles get the scale
+    for (const e of K.engines) {
+      const r = e.nacR * es * e.s;
+      /* `single` = centreline mount: its hardware must NOT be doubled, so the
+         mirror happens per kit descriptor instead of unconditionally */
+      const mir = (list) => (e.single ? list : HULL.mirrorAll(list));
+      const sides = e.single ? [0] : [-1, 1];
+      recessP.push(...mir([
+        HULL.cyl(r, r * 1.2, 2.0, 8, [e.x, e.y, 2.1], [Math.PI / 2, 0, 0]),                        // nacelle
+        HULL.cyl(0.44 * es * e.s, 0.3 * es * e.s, 0.4, 8, [e.x, e.y, 3.15], [Math.PI / 2, 0, 0]),  // nozzle bell
+        kitRing(0.46 * es * e.s, e.x, e.y, 3.32, null, 0.055, 12),                                  // nozzle ring
+        HULL.box(0.16 * e.s, 0.1, 1.5, [e.x, e.y + 0.36, 2.3]),                                     // nacelle brace
+        HULL.box(0.2 * e.s, 0.09, 1.35, [e.x, e.y + 0.42, 2.05]),                                   // brace cap
+      ]));
+      trimP.push(...mir([kitRing(0.3 * es * e.s, e.x, e.y, 3.44, null, 0.045, 8)]));                // glowing lip
+      panelP.push(...mir([
+        HULL.cyl(0.46 * nb * e.s, 0.46 * nb * e.s, 0.22, 8, [e.x, e.y, 1.28], [Math.PI / 2, 0, 0]), // intake collar
+      ]));
+      for (const s of sides) {
+        const nx = s * e.x;
+        const core = new THREE.Mesh(new THREE.CylinderGeometry(0.24 * es * e.s, 0.17 * es * e.s, 0.3, 8), coreMat);
+        core.rotation.x = -Math.PI / 2; core.position.set(nx, e.y, 3.42);
+        model.add(core);
+        const disc = new THREE.Mesh(new THREE.CircleGeometry(0.33 * es * e.s, 12), coreMat);
+        disc.position.set(nx, e.y, 3.55);
+        model.add(disc);
+        this.engGlow.push(disc);
+        const noz = new THREE.Object3D();
+        noz.position.set(nx, e.y, 3.6);
+        model.add(noz);
+        this.enginePts.push(noz);
+      }
     }
+    if (K.engines[0].single) {
+      /* IX-3: vernier tubes either side of the single main nozzle, so a
+         centreline engine still has stern hardware. No bloom disc — they are
+         trim, not thrust (the RCS anchors do the venting). */
+      recessP.push(...HULL.mirrorAll([
+        HULL.tube(0.14 * es, 0.17 * es, 1.0, 8, [0.62 * es, -0.02, 2.6], [Math.PI / 2, 0, 0]),
+        HULL.cyl(0.13 * es, 0.13 * es, 0.12, 8, [0.62 * es, -0.02, 3.05], [Math.PI / 2, 0, 0]),
+      ]));
+      trimP.push(...HULL.mirrorAll([kitRing(0.14 * es, 0.62 * es, -0.02, 3.12, null, 0.03, 8)]));
+    }
+
+    /* flush the four tiers — one mesh each, so all the detail above costs
+       triangles but no draw calls (the hull used to be ~40 tiny meshes) */
+    model.add(new THREE.Mesh(mergeGeos(litP), gunmetal));
+    model.add(new THREE.Mesh(mergeGeos(panelP), panels));
+    model.add(new THREE.Mesh(mergeGeos(recessP), darker));
+    model.add(new THREE.Mesh(mergeGeos(trimP), accent));
 
     // gun muzzle anchors at wingtip pods (bolts converge on the aim ray)
     this.muzzles = [];
     for (const s of [-1, 1]) {
       const m = new THREE.Object3D();
-      m.position.set(s * 2.62, -0.06, -1.05);
+      m.position.set(s * tipX, -0.06, -1.05);
       model.add(m);
       this.muzzles.push(m);
     }
@@ -2743,7 +3511,7 @@ class Player {
     this.podDoors = [];
     for (const s of [-1, 1]) {
       const hinge = new THREE.Group();
-      hinge.position.set(s * 1.7, -0.05, 0.75);   // outer edge of the rack
+      hinge.position.set(s * 1.7 * span, -0.05, 0.75);   // outer edge of the rack
       const door = new THREE.Mesh(new THREE.BoxGeometry(0.02, 0.24, 1.3), darker);
       door.position.y = -0.12;
       hinge.add(door);
@@ -2757,6 +3525,22 @@ class Player {
     this.engLight.position.set(0, 0, 3.6);
     model.add(this.engLight);
 
+    /* RCS nozzle anchors — lateral/vertical corrections vent from these
+       (see Player._rcsPuff), so a side-slip reads as side-slip instead of
+       mysteriously brightening the stern. Left/right are the wing roots,
+       top/bottom flank the canopy. */
+    this.rcsPts = {};
+    const rcs = (key, x, y, z) => {
+      const o = new THREE.Object3D();
+      o.position.set(x, y, z);
+      model.add(o);
+      this.rcsPts[key] = o;
+    };
+    rcs('left', -1.9 * span, -0.02, 0.1);
+    rcs('right', 1.9 * span, -0.02, 0.1);
+    rcs('top', 0, 0.62, -0.7);
+    rcs('bottom', 0, -0.42, -0.7);
+
     // COCKPIT v2 — detailed interior, visible only in first-person
     this._buildCockpit(g);
 
@@ -2766,6 +3550,23 @@ class Player {
 
     this.group = g; this.model = model;
     G.scene.add(g);
+  }
+
+  /* CHASSIS SWAP — tear the hull down so _buildMesh can rebuild it with
+     the new CFG.chassis[].mesh silhouette. Only ever runs on a chassis
+     change (start-run pick / __VL.ship swap), never per frame. */
+  _rebuildMesh() {
+    if (this.group) {
+      G.scene.remove(this.group);
+      this.group.traverse((o) => {
+        if (o.geometry && o.geometry.dispose) o.geometry.dispose();
+        const mats = Array.isArray(o.material) ? o.material : (o.material ? [o.material] : []);
+        for (const m of mats) if (m && !m.userData.shared && m.dispose) m.dispose();
+      });
+      this.group = null;
+    }
+    if (this._mfdTex) { this._mfdTex.dispose(); this._mfdTex = null; }
+    this._buildMesh();
   }
 
   /* ================= COCKPIT v2 =================
@@ -2783,44 +3584,50 @@ class Player {
     const glowStrip = new THREE.MeshBasicMaterial({ color: new THREE.Color(0.25, 1.1, 1.4) });
 
     // ---- canopy frame: A-pillars + side rails + overhead arch ----
+    /* FIX(framing v1.8): rails sat in the eyeline, the rear-view mirror
+       blocked the upper-center view, the dash top cleared the bottom of
+       the windscreen by a hair. Thinner pillars, higher rails, mirror
+       gone, dash dropped — the pilot reads target space, not struts. */
     for (const s of [-1, 1]) {
-      const pillar = new THREE.Mesh(new THREE.BoxGeometry(0.09, 1.35, 0.14), strutMat);
-      pillar.position.set(s * 0.92, 0.28, -1.78);
-      pillar.rotation.z = s * 0.34;
+      const pillar = new THREE.Mesh(new THREE.BoxGeometry(0.055, 1.3, 0.12), strutMat);
+      pillar.position.set(s * 1.14, 0.28, -1.8);
+      pillar.rotation.z = s * 0.3;
       c.add(pillar);
-      const rail = new THREE.Mesh(new THREE.BoxGeometry(0.08, 0.09, 2.3), strutMat);
-      rail.position.set(s * 0.78, 0.56, -1.15);
+      const rail = new THREE.Mesh(new THREE.BoxGeometry(0.045, 0.06, 2.3), strutMat);
+      rail.position.set(s * 0.92, 0.78, -1.15);
       c.add(rail);
     }
-    const arch = new THREE.Mesh(new THREE.TorusGeometry(0.94, 0.055, 6, 20, Math.PI), strutMat);
-    arch.position.set(0, 0.55, -1.95);
+    /* the canopy bow frames the bottom of the view like a real windscreen —
+       high enough that it never enters the straight-ahead field */
+    const arch = new THREE.Mesh(new THREE.TorusGeometry(0.88, 0.05, 6, 20, Math.PI), strutMat);
+    arch.position.set(0, 0.72, -2.0);
     arch.rotation.z = Math.PI;
     c.add(arch);
-    // an interior rear-view mirror stub (cosmetic)
-    const mirror = new THREE.Mesh(new THREE.BoxGeometry(0.34, 0.12, 0.05), strutMat);
-    mirror.position.set(0, 0.86, -1.5);
-    c.add(mirror);
+
 
     // ---- dashboard: angled slab + hooded MFD well ----
     const dash = new THREE.Group();
-    dash.position.set(0, -0.2, -1.92);
-    dash.rotation.x = 0.38;
+    dash.position.set(0, -0.46, -1.95);      // dropped below the eyeline
+    dash.rotation.x = 0.3;
     c.add(dash);
+
     const dashTop = new THREE.Mesh(new THREE.BoxGeometry(1.9, 0.09, 0.62), padMat);
-    dashTop.position.y = 0.1;
+    dashTop.position.y = 0.06;
+
     dash.add(dashTop);
     const dashFace = new THREE.Mesh(new THREE.BoxGeometry(1.9, 0.5, 0.07), strutMat);
     dashFace.position.set(0, -0.14, -0.28);
     dash.add(dashFace);
-    // side consoles flanking the pilot
+    // side consoles flanking the pilot (outboard, below the rail line)
     for (const s of [-1, 1]) {
       const cons = new THREE.Mesh(new THREE.BoxGeometry(0.34, 0.5, 1.1), padMat);
-      cons.position.set(s * 0.98, -0.32, -1.45);
+      cons.position.set(s * 1.08, -0.42, -1.48);
       c.add(cons);
       const strip = new THREE.Mesh(new THREE.BoxGeometry(0.3, 0.02, 0.9), glowStrip);
-      strip.position.set(s * 0.98, -0.09, -1.45);
+      strip.position.set(s * 1.08, -0.2, -1.48);
       c.add(strip);
     }
+
 
     // ---- the LIVE multi-function display (canvas texture) ----
     this._mfdCanvas = makeCanvas(256, 128);
@@ -2853,10 +3660,10 @@ class Player {
 
     // ---- controls: stick, throttle, pedals (animated every frame) ----
     this._stickBase = new THREE.Mesh(new THREE.CylinderGeometry(0.1, 0.13, 0.06, 10), strutMat);
-    this._stickBase.position.set(0, -0.42, -1.52);
+    this._stickBase.position.set(0, -0.53, -1.6);
     c.add(this._stickBase);
     this._stick = new THREE.Group();
-    this._stick.position.set(0, -0.4, -1.52);
+    this._stick.position.set(0, -0.51, -1.6);
     const stickShaft = new THREE.Mesh(new THREE.CylinderGeometry(0.028, 0.036, 0.3, 8), strutMat);
     stickShaft.position.y = 0.15;
     this._stick.add(stickShaft);
@@ -2864,16 +3671,30 @@ class Player {
     grip.position.y = 0.32;
     grip.scale.y = 1.5;
     this._stick.add(grip);
+    /* the pilot: a gloved hand rides the grip (moves with stick deflection)
+       — presence WITHOUT blocking the view */
+    const glove = new THREE.MeshStandardMaterial({ color: 0x0e141c, metalness: 0.35, roughness: 0.85 });
+    const handR = new THREE.Mesh(new THREE.SphereGeometry(0.065, 8, 6), glove);
+    handR.position.set(0.075, 0.26, 0.03);
+    handR.scale.set(1, 1.4, 1.1);
+    this._stick.add(handR);
     this._stick.rotation.x = 0.12;
     c.add(this._stick);
+
     this._throttle = new THREE.Group();
-    this._throttle.position.set(0.86, -0.22, -1.42);
+    this._throttle.position.set(1.0, -0.38, -1.52);
     const thrBox = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.05, 0.34), strutMat);
     this._throttle.add(thrBox);
     const thrKnob = new THREE.Mesh(new THREE.BoxGeometry(0.09, 0.1, 0.09), padMat);
     thrKnob.position.y = 0.07;
     this._throttle.add(thrKnob);
+    const handL = new THREE.Mesh(new THREE.SphereGeometry(0.06, 8, 6),
+      new THREE.MeshStandardMaterial({ color: 0x0e141c, metalness: 0.35, roughness: 0.85 }));
+    handL.position.set(-0.05, 0.12, 0);
+    handL.scale.set(1.2, 1, 1.1);
+    this._throttle.add(handL);
     c.add(this._throttle);
+
     // rudder pedals (cosmetic, far below the dash)
     for (const s of [-1, 1]) {
       const ped = new THREE.Mesh(new THREE.BoxGeometry(0.14, 0.2, 0.05), strutMat);
@@ -2887,16 +3708,17 @@ class Player {
     seat.rotation.x = 0.16;
     c.add(seat);
 
-    // overhead switch panel
-    const oh = new THREE.Mesh(new THREE.BoxGeometry(0.7, 0.06, 0.24), strutMat);
-    oh.position.set(0, 0.95, -1.35);
+    // overhead switch panel — lifted to the very top of the canopy frame
+    const oh = new THREE.Mesh(new THREE.BoxGeometry(0.64, 0.05, 0.2), strutMat);
+    oh.position.set(0, 1.18, -1.6);
     c.add(oh);
     for (let i = 0; i < 4; i++) {
       const sw = new THREE.Mesh(new THREE.BoxGeometry(0.03, 0.03, 0.1),
         new THREE.MeshBasicMaterial({ color: i % 2 ? 0x9fd8ff : 0xffc857 }));
-      sw.position.set(-0.24 + i * 0.16, 0.9, -1.35);
+      sw.position.set(-0.22 + i * 0.14, 1.14, -1.6);
       c.add(sw);
     }
+
 
     c.visible = false;
     this.cockpit = c;
@@ -3094,7 +3916,7 @@ class Player {
     const tm = this.turnMult || 1;
     // chassis: per-class turn-rate multipliers
     const chP = this.ship.pitchRate || 1, chY = this.ship.yawRate || 1, chR = this.ship.rollRate || 1;
-    const tPitch = (F.invertY ? 1 : -1) * curve(cur.y) * F.pitchRate * pw * tm * chP;
+    const tPitch = (CFG.settings.invertY ? 1 : -1) * curve(cur.y) * F.pitchRate * pw * tm * chP;
     const tYaw = -curve(cur.x) * F.yawRate * pw * tm * chY;
 
     // roll: Q/E keys + mouse-wheel impulses (wheel adds momentum that
@@ -3132,14 +3954,29 @@ class Player {
     const th = (inp.key('KeyW') ? 1 : 0) - (inp.key('KeyS') ? 1 : 0);
     const st = (inp.key('KeyD') ? 1 : 0) - (inp.key('KeyA') ? 1 : 0);
     const vt = (inp.key('Space') ? 1 : 0) - (inp.key('KeyC') ? 1 : 0);
+    // TOUCH: the on-screen THRUST slider replaces W/S — full-forward also
+    // engages the afterburner, the middle band auto-strafes. Keyboard input
+    // overrides wherever it disagrees, so hybrid laptops are unaffected.
+    const touch = !!inp.touch && !th && !st && !vt;
+    const tt = touch ? (inp.touchThrottle || 0) : 0;
+    const thEff = th || (tt > 0.5 ? 1 : tt < -0.5 ? -1 : 0);
+    const stEff = st || (touch && tt >= 0.25 && tt <= 0.75 ? 1 : 0);
 
-    // ---- boost: gated by an energy meter (drain / regen / engage floor) ----
-    const wantBoost = inp.key('ShiftLeft') || inp.key('ShiftRight');
-    const canBoost = wantBoost && this.boostE > C.boostMin && th > 0;
+    // ---- boost: energy meter with a real burnout (drain / regen / rearm) ----
+    const wantBoost = inp.key('ShiftLeft') || inp.key('ShiftRight') || tt > 0.97;
+    /* FIX(boost): the old gate re-evaluated `boostE > boostMin` EVERY frame,
+       so the burner re-lit the instant regen crossed the 12-unit floor while
+       Shift was held — a flickering near-permanent weak burner, engine audio
+       flapping, and a meter pinned at ~12%. The burner is now LATCHED: it
+       engages above the floor, then stays lit until released or burned dry,
+       and a burnout locks it until the meter climbs back to boostRearm. */
+    if (this.boostHeld && (!wantBoost || thEff <= 0)) this.boostHeld = false;
+    if (!this.boostHeld && wantBoost && thEff > 0 && !this.boostLock && this.boostE > C.boostMin) {
+      this.boostHeld = true;
+    }
+    const canBoost = this.boostHeld;
     const bDrain = C.boostDrain * (this.ship.boostDrain || 1);
     const bRegen = C.boostRegen * (this.ship.boostRegen || 1);
-    if (canBoost) this.boostE = Math.max(0, this.boostE - bDrain * dt);
-    else this.boostE = Math.min(C.boostEnergy, this.boostE + bRegen * dt);
 
     // CAMPAIGN: phase 2 power ramp — thrust authority + terminal speed
     // both scale up from 40% to 100% as systems come online.
@@ -3157,6 +3994,18 @@ class Player {
     const wellS = 1 - 0.55 * wellK;                   // terminal-speed factor
     const canBoostEff = canBoost && wellK < 0.5;      // wells kill the burner
     this.boosting = canBoostEff;
+    /* energy: only an EFFECTIVE burner drains — an interdictor well used
+       to chew the meter while producing no thrust at all. A burnout at
+       empty locks the burner until boostRearm (see above). */
+    if (canBoostEff) {
+      this.boostE = Math.max(0, this.boostE - bDrain * dt);
+      if (this.boostE <= 0) { this.boostLock = true; this.boostHeld = false; }
+    } else {
+      this.boostE = Math.min(C.boostEnergy, this.boostE + bRegen * dt);
+      if (this.boostLock && this.boostE >= C.boostRearm) this.boostLock = false;
+    }
+    if (this.boosting && !this._wasBoosting) G.audio.boostWhoosh();
+    this._wasBoosting = this.boosting;
 
     const mult = (canBoostEff ? F.boostMult : 1) * (over ? CFG.weapons.overdrive.accelMult : 1);
     /* overcharged lance dump chokes the drive — thrust is nearly dead
@@ -3165,14 +4014,17 @@ class Player {
     /* afterburn nozzles (+accel) apply here */
     const am = this.accelMult || 1;
     _v4.set(0, 0, 0)
-      .addScaledVector(fwd, th * F.accel * mult * pw * wellF * vuln * am * chA)
-      .addScaledVector(right, st * F.strafe * pw * wellF * vuln * am * chA)
+      .addScaledVector(fwd, thEff * F.accel * mult * pw * wellF * vuln * am * chA)
+      .addScaledVector(right, stEff * F.strafe * pw * wellF * vuln * am * chA)
       .addScaledVector(up, vt * F.vert * pw * wellF * vuln * am * chA);
     if (this.charging) _v4.multiplyScalar(0.75);      // heavy lance = mass penalty
     this.vel.addScaledVector(_v4, dt);
 
-    // exponential drag — frame-rate independent coasting decay
-    this.vel.multiplyScalar(Math.exp(-F.drag * dt));
+    // exponential drag — frame-rate independent coasting decay.
+    // FLIGHT MODEL setting: 'inertial' scales drag way down so momentum
+    // carries and counter-thrust is the brake (see CFG.flight.inertialDragMult).
+    const dragC = F.drag * (CFG.settings.flightModel === 'inertial' ? F.inertialDragMult : 1);
+    this.vel.multiplyScalar(Math.exp(-dragC * dt));
 
     // soft speed clamp: excess speed bleeds off rather than hard-stopping
     // afterburn nozzles (+max speed) apply here
@@ -3188,13 +4040,21 @@ class Player {
     this.pos.addScaledVector(this.vel, dt);
     this.group.position.copy(this.pos);
 
-    // thrust magnitude for audio/FX (boost reads hotter than cruise)
-    this.thrust01 = U.clamp(Math.abs(th) * 0.75 + Math.abs(st) * 0.3 + Math.abs(vt) * 0.3, 0, 1)
-      * (canBoost ? 1.25 : 1);
+    /* thrust readouts for audio / FX.
+       thrust01  — overall "engine effort" bed level (any axis, incl. boost)
+       thrustMain — FORWARD-burner level: drives the stern nozzle plumes +
+                    glow discs (side/vertical corrections get RCS puffs in
+                    _updateCosmetics instead of lighting the stern)
+       rcsS/rcsV —  lateral/vertical thrust intents those puffs read. */
+    this.thrustMain = U.clamp(Math.max(0, thEff) * 0.85 + (canBoostEff ? 0.5 : 0), 0, 1.35);
+    this.thrust01 = U.clamp(Math.abs(thEff) * 0.75 + Math.abs(stEff) * 0.3 + Math.abs(vt) * 0.3, 0, 1)
+      * (canBoostEff ? 1.25 : 1);
+    this.rcsS = stEff; this.rcsV = vt;
   }
 
   /* ---------------- collisions with rocks / stations / planets ---------------- */
   _resolveCollisions(dt) {
+    const C = CFG.combat;
     const hit = G.world.asteroids.querySphere(this.pos, CFG.combat.playerRadius)
              || G.world.queryStatic(this.pos, CFG.combat.playerRadius);
     if (!hit) return;
@@ -3208,10 +4068,13 @@ class Player {
       this.vel.x -= hit.nx * vn * 1.35;
       this.vel.y -= hit.ny * vn * 1.35;
       this.vel.z -= hit.nz * vn * 1.35;
+      // contact damage: gates at a lower impact speed than before and
+      // scales harder, so hugging rocks/stations actually costs hull
+      // (numbers in CFG.combat.contact*).
       const impact = -vn;
-      if (impact > 18 && this.contactCd <= 0) {
-        this.contactCd = CFG.combat.contactCooldown;
-        this.damage(Math.min(45, (impact - 18) * 0.55), this.pos);
+      if (impact > C.contactImpactMin && this.contactCd <= 0) {
+        this.contactCd = C.contactCooldown;
+        this.damage(Math.min(C.contactDmgMax, (impact - C.contactImpactMin) * C.contactDmgFactor), this.pos);
         FX.addTrauma(0.5);
         G.audio.thud(U.clamp(impact / 60, 0.2, 1));
         FX.hit(this.pos, 12);
@@ -3256,7 +4119,7 @@ class Player {
       if (inp.justKey('Digit7')) this.setWeapon(6);
       if (inp.justKey('Digit8')) this.setWeapon(7);
       if (inp.justKey('Digit9')) this.setWeapon(8);
-      if (inp.justKey('KeyX')) this.setWeapon((this.weapon + 1) % 9);
+      if (inp.justKey('KeyX')) this.nextWeapon();
     } else if (this.weapon !== 0) this.setWeapon(0);
 
     this.overdriveT = Math.max(0, this.overdriveT - dt);
@@ -3405,6 +4268,8 @@ class Player {
     const aim = this.getAimDir(_v1);
     this.muzzles[0].getWorldPosition(_v2);
     this._assist(aim, _v2, CFG.weapons.assistConeBlaster, CFG.weapons.aimAssistBlaster * 0.8, true);
+    // FIX(aim): was converging on 40% of the convergeDist (short of every
+    // other weapon's convergence point) — same math as _fireBlaster now.
     const n = W.pellets;
     for (let i = 0; i < n; i++) {
       _v3.copy(aim);
@@ -3415,7 +4280,7 @@ class Player {
         _v4.set(Math.cos(a), Math.sin(a), 0).applyQuaternion(this.quat);
         _v3.addScaledVector(_v4, W.spread).normalize();
       }
-      _v4.copy(G.camera.position).addScaledVector(_v3, CFG.weapons.convergeDist * 0.4).sub(_v2).normalize();
+      _v4.copy(G.camera.position).addScaledVector(_v3, CFG.weapons.convergeDist).sub(_v2).normalize();
       Projectiles.fire('shard', 'player', _v2, _v4, {
         speed: W.speed, dmg: W.dmg * (1 + 0.35 * (this._shardStacks || 0)),
         life: W.life, knock: W.knock });
@@ -3446,6 +4311,9 @@ class Player {
     it.armT = W.armTime;
     it.vel.multiplyScalar(0.2);                // gentle back-drift
     this.voidMines.push(it);
+    // FIX(stats): mines deployed never counted as shots — the accuracy
+    // readout ignored this weapon entirely (every other slot counts).
+    this.shotsFired++;
     G.audio.shotBlaster(0.4);
   }
 
@@ -3518,12 +4386,29 @@ class Player {
 
   setWeapon(i) {
     if (i === this.weapon) return;
+    if (!this.weaponUnlocked(i)) {
+      // WEAPON PROGRESSION: locked slots name the sector that unlocks them
+      const sec = G.campaign ? G.campaign.weaponUnlockSector(i) : -1;
+      G.hud.alert(sec > 0 ? 'WEAPON LOCKED — CLEAR SECTOR ' + sec : 'WEAPON LOCKED', 1.6);
+      G.audio.ui();
+      return;
+    }
     this.weapon = i;
     if (this.charging) { this.charging = false; this.chargeT = 0; }
     this.lockTags.length = 0;          // switching drops pending multi-lock tags
     this._volleyTargets = null;
     G.audio.ui();
     G.hud.refreshSlots();
+  }
+
+  /* ---- weapon unlock ladder (adventure): see CFG.campaign.weapon* ---- */
+  weaponUnlocked(i) { return !!(this.unlockedWeapons && this.unlockedWeapons[i]); }
+  unlockWeapon(i) { if (i >= 0 && i < 9 && this.unlockedWeapons) this.unlockedWeapons[i] = true; }
+  nextWeapon() {
+    for (let k = 1; k <= 9; k++) {
+      const i = (this.weapon + k) % 9;
+      if (this.weaponUnlocked(i)) { this.setWeapon(i); return; }
+    }
   }
 
   /* World-space aim direction: ray through the virtual cursor.
@@ -3784,11 +4669,36 @@ class Player {
   _updateSurvival(dt) {
     // MODIFIER: NO SHIELD REGEN
     const noRegen = G.modOn && G.modOn('noShieldRegen');
-    if (!noRegen && this.lastDamageT > CFG.combat.shieldDelay && this.shield < this.maxShield) {
+    /* UPGRADE(hazard v1.8.1): IONSTORM sectors keep shields offline — the
+       regen clock simply never satisfies, so the bubble you retreat into
+       does not exist and hull discipline matters instead. */
+    if (G.world && G.world.ionstorm) this.shield = 0;
+    if (!noRegen && !(G.world && G.world.ionstorm) &&
+        this.lastDamageT > CFG.combat.shieldDelay && this.shield < this.maxShield) {
       this.shield = Math.min(this.maxShield, this.shield + CFG.combat.shieldRegen * (this.shieldRegenMult || 1) * dt);
     }
     if (this.vulnT > 0 && this.alive) G.hud.alert('VENTING — SHIELDS OFFLINE', 0.2);
     if (this.hull < 30 && this.alive) G.hud.alert('HULL CRITICAL', 0.4);
+  }
+
+  /* ---------------- RCS puff: one short spray from a hull anchor ----------------
+     Fired opposite the commanded lateral/vertical thrust so side-slip and
+     climb/dive corrections have visible reaction control (the stern plume
+     stays a forward-burn effect). */
+  _rcsPuff(key, sx, sy, amt) {
+    const pt = this.rcsPts && this.rcsPts[key];
+    if (!pt) return;
+    pt.getWorldPosition(_rv1);
+    _rv2.set(0, 0, 0)
+      .addScaledVector(_rv3.set(1, 0, 0).applyQuaternion(this.quat), sx)
+      .addScaledVector(_rv4.set(0, 1, 0).applyQuaternion(this.quat), sy);
+    const n = amt > 0.6 ? 2 : 1;
+    for (let i = 0; i < n; i++) {
+      const sp = 12 + Math.random() * 7;
+      FX.particles.spawn(_rv1.x, _rv1.y, _rv1.z,
+        _rv2.x * sp, _rv2.y * sp, _rv2.z * sp,
+        0.5, 1.2, 1.9, 0.3 + Math.random() * 0.15, 0.16, 2.6, 0.35);
+    }
   }
 
   /* ---------------- cosmetics: bank, recoil, engine FX ---------------- */
@@ -3800,16 +4710,19 @@ class Player {
     // recoil kick along local Z
     this.recoil = Math.max(0, this.recoil - 3.5 * dt);
     this.model.position.z = this.recoil;
-    // engine glow scale/color + point light + exhaust particles
-    const t = this.thrust01, over = this.overdriveT > 0;
+    // engine glow scale/color + point light + exhaust particles.
+    // Stern hardware answers FORWARD burn only (thrustMain); lateral and
+    // vertical corrections vent from the RCS anchors below — the plume
+    // answers the direction you are actually being pushed.
+    const t = this.thrust01, mainT = this.thrustMain || 0, over = this.overdriveT > 0;
     const pulse = 1 + Math.sin(performance.now() * 0.02) * 0.08;
     for (const d of this.engGlow) {
-      d.scale.setScalar((0.55 + t * 0.85) * pulse);
+      d.scale.setScalar((0.55 + mainT * 0.85) * pulse);
       if (over) d.material.color.setRGB(1.2, 0.5, 2.2);
       else if (this.boosting) d.material.color.setRGB(0.6, 1.9, 2.8);
       else d.material.color.setRGB(0.45, 1.5, 2.2);
     }
-    this.engLight.intensity = 0.5 + t * 2.4;
+    this.engLight.intensity = 0.5 + mainT * 2.4;
     this.engLight.color.set(over ? 0xb070ff : 0x66d8ff);
     /* LANCE CAPACITOR + OVERCHARGE TELL: the dorsal coil's glow rides the
        charge level; past 100% it flickers UNSTABLE (the readable risk cue)
@@ -3832,13 +4745,19 @@ class Player {
         h.rotation.z = U.damp(h.rotation.z, h.position.x < 0 ? -want : want, 8, dt);
       }
     }
-    // exhaust particles from both nozzles
+    // exhaust particles from both nozzles (forward burn only)
     const back = _v1.set(0, 0, 1).applyQuaternion(this.quat);
-    const rate = Math.ceil(t * 3);   // 0..3 particles per nozzle per frame
+    const rate = Math.ceil(mainT * 3);   // 0..4 particles per nozzle per frame
     for (const noz of this.enginePts) {
       noz.getWorldPosition(_v2);
-      for (let i = 0; i < rate; i++) FX.engine(_v2, back, t, over);
+      for (let i = 0; i < rate; i++) FX.engine(_v2, back, mainT, over);
     }
+    // RCS puffs vent OPPOSITE the correction thrust (strafe right → left vent)
+    const rs = this.rcsS || 0, rv = this.rcsV || 0;
+    if (rs > 0.12) this._rcsPuff('left', -1, 0, rs);
+    else if (rs < -0.12) this._rcsPuff('right', 1, 0, -rs);
+    if (rv > 0.12) this._rcsPuff('bottom', 0, -1, rv);
+    else if (rv < -0.12) this._rcsPuff('top', 0, 1, -rv);
     // struts only make sense from the inside; the model stays visible in
     // every view except first-person (including the phase-1 turret view)
     this.cockpit.visible = (G.camRig.mode === 'fp');
@@ -3877,9 +4796,10 @@ class Player {
     return !this.alive || this.spawnGuard > 0;
   }
 
-  damage(dmg, hitPos, silent) {
+  damage(dmg, hitPos, silent, src) {
     if (!this.alive || this.spawnGuard > 0 || dmg <= 0) return;
-    if (G.cheats && G.cheats.god) return;          // CHEATS: god mode      if (G.cheats && G.cheats.ghost) return;        // CHEATS ghost: damage immunity
+    if (G.cheats && G.cheats.god) return;          // CHEATS: god mode
+    if (G.cheats && G.cheats.ghost) return;        // FIX: ghost-mode immunity was merged into the god-mode comment line and never ran — ghosts took full damage
     const camp = G.campaign;
     if (camp && camp.phase === 1) {
       /* CAMPAIGN: phase 1 — the ship is armored down on the pad; anything
@@ -3891,6 +4811,12 @@ class Player {
     // CAMPAIGN: cockpit view gets a small damped camera jolt on hits
     if (G.camRig && G.camRig.mode !== 'tp') G.camRig.addSwayImpulse(U.clamp(dmg / 28, 0.15, 1));
     this.lastDamageT = 0;
+    /* §4 NEMESIS: attribute the hit. `src` is the enemy INSTANCE that dealt
+       it — enemy projectiles carry it (see Projectiles.fire's `it.src`) and
+       the enemy classes that hurt the player directly pass themselves.
+       Collisions, hazards and the boundary pass nothing, so a rock can never
+       flag a rival. */
+    if (src && typeof Nemesis !== 'undefined') Nemesis.noteDamage(src, dmg);
     // impact feedback scales with ACTUAL damage: sharp kick on top of the
     // long-tail trauma wobble
     FX.kick(U.clamp(dmg / 40, 0.08, 0.7));
@@ -3953,6 +4879,10 @@ class Player {
     const ck = (G.game && G.game.shipSel) || CFG.chassisDefault;
     this.chassisKey = CFG.chassis[ck] ? ck : CFG.chassisDefault;
     this.ship = CFG.chassis[this.chassisKey];
+    // silhouette swap: the picker has to actually change the hull — and a
+    // repaint from the hangar has to land on the next run
+    const liv = (typeof Meta !== 'undefined' && Meta.liveryColors) ? Meta.liveryColors().id : 'factory';
+    if (this._builtChassis !== this.chassisKey || this._builtLivery !== liv) this._rebuildMesh();
     // per-map VISIBLE refits (adventure mode): each cleared map grants a
     // CHOSEN upgrade whose effects stack — and bolts physical hardware onto
     // the hull so your ship visibly grows guns and armor.
@@ -3973,6 +4903,18 @@ class Player {
     this.hull = this.maxHull; this.shield = this.maxShield;
     this.boostE = CFG.combat.boostEnergy;
     this.weapon = 0; this.blasterTier = 0;
+    /* WEAPON PROGRESSION: adventure flies the core pair from the first
+       ascent and wakes one more system per sector (Campaign._startMap);
+       endless keeps the whole battery from launch. */
+    if (G.game && G.game.mode === 'adventure') {
+      this.unlockedWeapons = [false, false, false, false, false, false, false, false, false];
+      for (const i of CFG.campaign.weaponStart) this.unlockedWeapons[i] = true;
+    } else {
+      this.unlockedWeapons = [true, true, true, true, true, true, true, true, true];
+    }
+    // boost burnout state + cosmetic thrust readouts
+    this.boostLock = false; this.boostHeld = false; this._wasBoosting = false;
+    this.thrustMain = 0; this.rcsS = 0; this.rcsV = 0;
     // HT-8 BASTION spawns with the Mk III blaster tier from the pad
     if (this.chassisKey === 'heavy') this.blasterTier = 2;
     this.flareCdMult = 1;
@@ -4073,9 +5015,10 @@ class Player {
     const accent = new THREE.MeshStandardMaterial({ color: 0x35271a, emissive: 0xff9a3c, emissiveIntensity: 1.3 });
     const steel = new THREE.MeshStandardMaterial({ color: 0x565f6a, metalness: 0.7, roughness: 0.5 });
     const addPair = (mk, z, y) => {
+      const wx = this._wingMountX || 2.05;
       for (const s of [-1, 1]) {
         const m = mk(s);
-        m.position.set(s * 2.05, y === undefined ? -0.02 : y, z);
+        m.position.set(s * wx, y === undefined ? -0.02 : y, z);
         this.upgradeVis.add(m);
       }
     };
@@ -4301,7 +5244,7 @@ class CameraRig {
       this.curQuat.slerp(_q1, 1 - Math.exp(-9 * dt));
     } else {
       /* cockpit: near-rigid, very high rates (you ARE the ship) */
-      _v1.set(0, 0.42, -0.9).applyQuaternion(p.quat).add(p.pos);
+      _v1.set(0, 0.46, -0.88).applyQuaternion(p.quat).add(p.pos);
       this.curPos.lerp(_v1, 1 - Math.exp(-40 * dt));
       this.curQuat.slerp(p.quat, 1 - Math.exp(-30 * dt));
     }
@@ -4462,6 +5405,245 @@ function mergeGeos(list) {
   out.setAttribute('uv', new THREE.BufferAttribute(uv, 2));
   return out;
 }
+/* Fleet-wide engine dressing: hardware collars + rims around every engine
+   disc, derived from the discs themselves (position + radius), so the
+   plume never reads as a glowing sticker pasted on a smooth tube. Call it
+   at the end of any enemy builder that owns an `engMeshes` array.
+   `key` (the class type) caches the merged geometry in ShipGeo — enemies
+   are spawned hundreds of times per run and their dispose() only frees
+   cache-marked geometry, so a fresh merge per spawn would leak. */
+function addEngineRims(mesh, engMeshes, mat, key) {
+  if (!mesh || !engMeshes || !engMeshes.length || !mat) return;
+  const o = {};
+  const build = () => {
+    const parts = [];
+    for (const e of engMeshes) {
+      const pr = e.geometry && e.geometry.parameters ? e.geometry.parameters.radius : 0.4;
+      const r = pr * (o.rim || 1.35);
+      parts.push(HULL.rim(r, e.position.x, e.position.y, e.position.z - 0.02, r * 0.16));
+      parts.push(HULL.tube(r * 1.06, r * 1.02, 0.09, 10,
+        [e.position.x, e.position.y, e.position.z + (o.depth || 0.08)], [Math.PI / 2, 0, 0]));
+    }
+    return mergeGeos(parts);
+  };
+  const geo = key ? ShipGeo.get('rims.' + key, build) : build();
+  mesh.add(new THREE.Mesh(geo, mat));
+}
+
+/* ============================================================
+   HULL FITTINGS — the post-build detail pass.
+   Each enemy class names its appliqué hardware here instead of
+   scattering descriptors through its builder. Plates reuse the
+   class's OWN hull material (so they flash on hits and cost no
+   extra material), trim uses the shared recess tier, glow uses
+   the functional emissive tier. Mirror-symmetric throughout.
+============================================================ */
+const HULL_FITTINGS = {
+  /* heavy assault craft: armour patchwork + minebreaker hardware */
+  ravager: {
+    plates: [
+      { geo: new THREE.BoxGeometry(5.0, 0.3, 3.0), pos: [0, 1.5, -0.4] },
+      { geo: new THREE.BoxGeometry(0.5, 1.1, 4.4), pos: [2.9, 1.0, 0.8] },
+      { geo: new THREE.BoxGeometry(0.5, 1.1, 4.4), pos: [-2.9, 1.0, 0.8] },
+      { geo: new THREE.BoxGeometry(1.4, 0.9, 1.4), pos: [0, 1.7, 3.4] },
+      { geo: new THREE.BoxGeometry(6.6, 0.24, 1.1), pos: [0, 0.9, -3.4] },
+    ],
+    trim: [
+      { geo: new THREE.BoxGeometry(5.2, 0.06, 0.3), pos: [0, 1.68, -2.0] },
+      { geo: new THREE.BoxGeometry(5.2, 0.06, 0.3), pos: [0, 1.68, 1.4] },
+      { geo: new THREE.BoxGeometry(0.34, 1.2, 0.5), pos: [3.2, 0.1, -2.6] },
+      { geo: new THREE.BoxGeometry(0.34, 1.2, 0.5), pos: [-3.2, 0.1, -2.6] },
+      { geo: new THREE.BoxGeometry(2.6, 0.5, 0.6), pos: [0, -1.55, 3.4] },
+    ],
+  },
+  /* engine-displacement cruiser: projector housings + spine gantries */
+  interdictor: {
+    plates: [
+      { geo: new THREE.BoxGeometry(0.7, 0.8, 5.6), pos: [4.6, 0.4, 1.0] },
+      { geo: new THREE.BoxGeometry(0.7, 0.8, 5.6), pos: [-4.6, 0.4, 1.0] },
+      { geo: new THREE.BoxGeometry(2.1, 0.5, 2.4), pos: [0, 1.9, -3.0] },
+    ],
+    trim: [
+      { geo: new THREE.BoxGeometry(4.0, 0.2, 0.6), pos: [0, 1.5, 1.6] },
+      { geo: new THREE.BoxGeometry(4.0, 0.2, 0.6), pos: [0, 1.5, -1.0] },
+      { geo: new THREE.CylinderGeometry(1.35, 1.5, 0.5, 12), rot: [Math.PI / 2, 0, 0], pos: [0, -0.8, -5.2] },
+      { geo: new THREE.BoxGeometry(0.3, 0.5, 5.0), pos: [4.4, 0.7, 2.6] },
+      { geo: new THREE.BoxGeometry(0.3, 0.5, 5.0), pos: [-4.4, 0.7, 2.6] },
+    ],
+  },
+  /* hovering support platform: ring greebles + core housing */
+  sentinel: {
+    plates: [
+      { geo: new THREE.BoxGeometry(0.9, 1.2, 1.6), pos: [1.95, 0, 0] },
+      { geo: new THREE.BoxGeometry(0.9, 1.2, 1.6), pos: [-1.95, 0, 0] },
+      { geo: new THREE.BoxGeometry(0.5, 1.3, 0.5), pos: [0, 2.1, 0] },
+      { geo: new THREE.BoxGeometry(0.9, 0.5, 2.6), pos: [0, -1.1, 0] },
+    ],
+    trim: [
+      { geo: new THREE.BoxGeometry(1.3, 0.6, 0.9), pos: [0, 3.6, 0] },
+      { geo: new THREE.BoxGeometry(1.3, 0.6, 0.9), pos: [0, -3.6, 0] },
+      { geo: new THREE.BoxGeometry(0.9, 0.7, 0.9), pos: [3.9, 0, 0] },
+      { geo: new THREE.BoxGeometry(0.9, 0.7, 0.9), pos: [-3.9, 0, 0] },
+      { geo: new THREE.BoxGeometry(2.2, 0.24, 0.5), pos: [0, 1.0, -1.8] },
+    ],
+  },
+  /* swarmer carrier: chitin plate bands over the sac + pylon ribbing */
+  hive: {
+    plates: [
+      { geo: new THREE.CylinderGeometry(1.5, 1.35, 0.18, 6), pos: [0, 1.9, 0.6] },
+      { geo: new THREE.CylinderGeometry(1.5, 1.35, 0.18, 6), pos: [0, 2.0, -0.9] },
+      { geo: new THREE.CylinderGeometry(1.5, 1.35, 0.18, 6), pos: [0, -2.0, 0.4], rot: [Math.PI, 0, 0] },
+      { geo: new THREE.CylinderGeometry(1.5, 1.35, 0.18, 6), pos: [0, -1.9, -1.1], rot: [Math.PI, 0, 0] },
+      { geo: new THREE.BoxGeometry(0.8, 0.4, 4.6), pos: [2.9, 0.6, 0] },
+      { geo: new THREE.BoxGeometry(0.8, 0.4, 4.6), pos: [-2.9, 0.6, 0] },
+    ],
+    trim: [
+      { geo: new THREE.TorusGeometry(2.5, 0.16, 6, 16), pos: [0, 0, 1.9] },
+      { geo: new THREE.TorusGeometry(2.5, 0.16, 6, 16), pos: [0, 0, -2.1] },
+      { geo: new THREE.BoxGeometry(6.6, 0.28, 0.6), pos: [0, -2.3, 0.4] },
+    ],
+  },
+  /* tiny kamikaze: a chitin collar so the dart reads as a creature */
+  drone: {
+    plates: [
+      { geo: new THREE.CylinderGeometry(1.22, 1.1, 0.14, 6), pos: [0, 0, 0.1] },
+      { geo: new THREE.ConeGeometry(0.16, 0.8, 5), rot: [Math.PI / 2, 0.5, 0], pos: [0.5, 0.7, 0.15] },
+      { geo: new THREE.ConeGeometry(0.16, 0.8, 5), rot: [Math.PI / 2, -0.5, 0], pos: [-0.5, 0.7, 0.15] },
+    ],
+  },
+  /* naval mine: heavier equatorial band + fuze studs */
+  mine: {
+    plates: [
+      { geo: new THREE.CylinderGeometry(1.42, 1.42, 0.3, 8), pos: [0, 0, 0] },
+    ],
+    trim: [
+      { geo: new THREE.CylinderGeometry(1.5, 1.5, 0.1, 8), pos: [0, 0.16, 0] },
+      { geo: new THREE.CylinderGeometry(1.5, 1.5, 0.1, 8), pos: [0, -0.16, 0] },
+    ],
+  },
+  /* bolted-on rock turret: armour collar + vent block */
+  turret: {
+    plates: [
+      { geo: new THREE.CylinderGeometry(2.15, 2.3, 0.5, 8), pos: [0, 0.1, 0] },
+      { geo: new THREE.BoxGeometry(1.0, 0.8, 0.6), pos: [1.6, 0.5, 0.4] },
+    ],
+    trim: [
+      { geo: new THREE.BoxGeometry(1.8, 0.14, 0.4), pos: [0, 0.62, 1.4] },
+      { geo: new THREE.BoxGeometry(1.8, 0.14, 0.4), pos: [0, 0.62, -1.4] },
+    ],
+  },
+  /* capital ship: armour bands + a command tower spine (kept restrained —
+     the boss already carries its own emissive wing arrays and turrets) */
+  boss: {
+    plates: [
+      { geo: new THREE.BoxGeometry(4.6, 0.9, 3.0), pos: [0, 1.9, 2.0] },
+      { geo: new THREE.BoxGeometry(4.6, 0.9, 3.0), pos: [0, 1.9, -4.0] },
+      { geo: new THREE.BoxGeometry(1.6, 2.4, 6.0), pos: [0, 2.7, -1.0] },
+      { geo: new THREE.BoxGeometry(2.6, 0.7, 18.0), pos: [0, -1.75, 0] },
+      { geo: new THREE.BoxGeometry(3.0, 1.2, 4.0), pos: [0, 1.0, 9.0] },
+    ],
+    trim: [
+      { geo: new THREE.BoxGeometry(4.4, 0.16, 0.6), pos: [0, 1.55, 5.4] },
+      { geo: new THREE.BoxGeometry(4.4, 0.16, 0.6), pos: [0, 1.55, -7.0] },
+      { geo: new THREE.BoxGeometry(0.5, 0.5, 1.4), pos: [0, 4.1, -1.0] },
+    ],
+  },
+};
+
+function dressHull(e) {
+  const spec = e && HULL_FITTINGS[e.type];
+  if (!spec || !e.mesh) return;
+  const host = e.model || e.mesh;
+  const hullMat = e.flashMats && e.flashMats[0] ? e.flashMats[0].mat : null;
+  if (spec.plates && spec.plates.length && hullMat) {
+    const geo = ShipGeo.get('fit.' + e.type + '.plates', () => mergeGeos(spec.plates));
+    host.add(new THREE.Mesh(geo, hullMat));
+  }
+  if (spec.trim && spec.trim.length) {
+    const geo = ShipGeo.get('fit.' + e.type + '.trim', () => mergeGeos(spec.trim));
+    host.add(new THREE.Mesh(geo, HULL.recess()));
+  }
+}
+
 const shared = (mat) => { mat.userData.shared = true; return mat; };
+
+/* ============================================================
+   SHIP KIT — the shared hull-detail vocabulary every procedural
+   ship in the game is built from (3 player chassis + every
+   enemy class + allies + boss).
+   ------------------------------------------------------------
+   Three material tiers on every hull, no exceptions:
+     1. HULL   lit plate — per-class hue, metalness .78-.88,
+               roughness .36-.50 (so the PMREM starfield catches it)
+     2. RECESS shadow metal — near-black insert/panel/rim tier,
+               one shared response across the whole fleet
+     3. GLOW   emissive, FUNCTIONAL ONLY (engine, intake, weapon
+               tip, canopy) — never decoration
+   Detail is always mirror-symmetric and always MERGED into the
+   existing geo groups, so the silhouette stays the identity and
+   the draw-call count stays flat. Faction motifs:
+     swarm     hex chitin plates, radial, spikes
+     militia   welded rectangles, exposed struts, patch plates
+     coalition chevron strakes, rounded rims, clean panel breaks
+============================================================ */
+const HULL = {
+  /* --- tier-2 / tier-3 material factory (shared across instances) --- */
+  recess: (color = 0x151a21) => shared(new THREE.MeshStandardMaterial({
+    color, metalness: 0.86, roughness: 0.42, envMapIntensity: 1.2 })),
+  glow: (r, g, b) => shared(new THREE.MeshBasicMaterial({ color: new THREE.Color(r, g, b) })),
+  strip: (color, intensity = 1.15) => new THREE.MeshStandardMaterial({
+    color: 0x2a2118, emissive: color, emissiveIntensity: intensity, roughness: 0.45, metalness: 0.3 }),
+
+  /* --- geo descriptor helpers (fed to mergeGeos) --- */
+  box: (w, h, d, pos, rot) => ({ geo: new THREE.BoxGeometry(w, h, d), pos, rot }),
+  cyl: (rt, rb, h, seg, pos, rot, scale) => ({ geo: new THREE.CylinderGeometry(rt, rb, h, seg), pos, rot, scale }),
+  /* open-ended tube: rings/collars that must NOT cap the opening they frame
+     (a capped collar in front of an engine disc reads as a black hole) */
+  tube: (rt, rb, h, seg, pos, rot, scale) => ({ geo: new THREE.CylinderGeometry(rt, rb, h, seg, 1, true), pos, rot, scale }),
+  cone: (r, h, seg, pos, rot, scale) => ({ geo: new THREE.ConeGeometry(r, h, seg), pos, rot, scale }),
+  sph: (r, seg, pos, scale) => ({ geo: new THREE.SphereGeometry(r, seg, Math.max(6, seg - 2)), pos, scale }),
+  torus: (r, tube, seg, pos, rot) => ({ geo: new THREE.TorusGeometry(r, tube, 6, seg), pos, rot }),
+  /* hexagonal plate — the swarm's chitin motif (thin 6-gon) */
+  hex: (r, t, pos, rot, scale) => ({ geo: new THREE.CylinderGeometry(r, r * 0.92, t, 6), pos, rot, scale }),
+  /* mirror a descriptor across the ship's centreline (X). Rotations about
+     Y/Z flip sign; no negative scale, so winding stays correct. */
+  mirror: (d) => [d, Object.assign({}, d, {
+    pos: [-d.pos[0], d.pos[1], d.pos[2]],
+    rot: d.rot ? [d.rot[0], -d.rot[1], -d.rot[2]] : undefined,
+  })],
+  mirrorAll: (list) => list.reduce((acc, d) => acc.concat(HULL.mirror(d)), []),
+
+  /* --- recipes: repeated hardware, one consistent scale --- */
+  /* recessed panel break: a thin dark strip laid across a hull plate */
+  panelLine: (w, l, x, y, z, rot) => HULL.box(w, 0.035, l, [x, y, z], rot),
+  /* welded militia patch: plate + two bolt studs */
+  weld: (w, h, d, x, y, z, rot) => [
+    HULL.box(w, h, d, [x, y, z], rot),
+    HULL.box(w * 0.9, h * 0.5, d * 1.04, [x, y + h * 0.16, z], rot),
+  ],
+  /* nozzle rim: hardware ring around an engine disc (recess tier) */
+  rim: (r, x, y, z, t = 0.055) => HULL.torus(r, t, 14, [x, y, z]),
+  /* exposed strut: thin beam with end blocks (militia/utility look) */
+  strut: (len, x, y, z, rot, th = 0.07) => [
+    HULL.box(th, th, len, [x, y, z], rot),
+    HULL.box(th * 1.7, th * 1.7, th * 2.2, [x, y, z - len * 0.5], rot),
+    HULL.box(th * 1.7, th * 1.7, th * 2.2, [x, y, z + len * 0.5], rot),
+  ],
+  /* chevron strake: two angled plates meeting at the nose (coalition/player) */
+  chevron: (w, l, x, y, z, yaw = 0.42) => HULL.mirrorAll([
+    HULL.box(w, 0.05, l, [x, y, z], [0, yaw, 0]),
+  ]),
+  /* clustered chitin spines for swarm hulls */
+  spines: (n, r, len, z0, y0, spread) => {
+    const out = [];
+    for (let i = 0; i < n; i++) {
+      const a = (i / n) * Math.PI * 2;
+      out.push(HULL.cone(r, len, 5,
+        [Math.cos(a) * spread, y0 + Math.sin(a) * spread * 0.5, z0],
+        [Math.PI / 2 + Math.sin(a) * 0.35, 0, Math.cos(a) * 0.35]));
+    }
+    return out;
+  },
+};
 
 

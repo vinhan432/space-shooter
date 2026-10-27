@@ -97,8 +97,13 @@ class Enemy {
   }
 
   enginePuff(color) {
+    // FIX(visuals): local +Z is AFT (noses point down -Z), so the puff
+    // must spawn BEHIND the hull — the old `-(radius+1.2)` offset spawned
+    // it in front of the nose while the velocity still pushed aft, so the
+    // exhaust streamed backwards THROUGH the ship. Now it trails from the
+    // nozzles like the player's does.
     _v1.set(0, 0, 1).applyQuaternion(this.quat);
-    _v2.copy(this.pos).addScaledVector(_v1, -(this.radius + 1.2));
+    _v2.copy(this.pos).addScaledVector(_v1, this.radius + 1.2);
     FX.particles.spawn(_v2.x, _v2.y, _v2.z, _v1.x * 12, _v1.y * 12, _v1.z * 12,
       color[0], color[1], color[2], 0.55 + this.radius * 0.12, 0.22, 2, 0.3);
   }
@@ -167,47 +172,80 @@ class Fighter extends Enemy {
     g.add(model);
     // per-instance hull material = the hit-flash target (elite = gold HVT)
     const hull = new THREE.MeshStandardMaterial({
-      color: elite ? 0x4a3a1a : 0x3a2430, metalness: 0.78, roughness: 0.38,
-      emissive: elite ? 0xffc857 : 0xff3040, emissiveIntensity: elite ? 0.5 : 0.35,
-      side: THREE.DoubleSide, envMapIntensity: 1.1 });
+      color: elite ? 0x4a3a1a : 0x3a2430, metalness: 0.8, roughness: 0.4, envMapIntensity: 1.15,
+      emissive: elite ? 0xffc857 : 0xff3040, emissiveIntensity: elite ? 0.5 : 0.35 });
     this.flashMats.push({ mat: hull, base: hull.emissiveIntensity });
     // shared, never-mutated materials (safe across all instances)
-    const trim = shared(new THREE.MeshStandardMaterial({
-      color: 0x191f28, metalness: 0.85, roughness: 0.35, envMapIntensity: 1.2 }));
+    const trim = HULL.recess(0x191f28);
     const glowMat = shared(new THREE.MeshBasicMaterial({
       color: elite ? new THREE.Color(2.6, 1.7, 0.5) : new THREE.Color(2.4, 0.55, 0.7) }));
 
     // swept wing planform (extruded slab with beveled edges)
+    const wingPts = [[0, 0.85], [1.45, -0.15], [1.68, -0.55], [1.42, -0.8], [0, -1.05]];
     const wingGeo = ShipGeo.get('ftr.wing', () => {
       const s = new THREE.Shape();
-      s.moveTo(0, 0.85); s.lineTo(1.45, -0.15); s.lineTo(1.68, -0.55);
-      s.lineTo(1.42, -0.8); s.lineTo(0, -1.05); s.closePath();
+      s.moveTo(wingPts[0][0], wingPts[0][1]);
+      for (let i = 1; i < wingPts.length; i++) s.lineTo(wingPts[i][0], wingPts[i][1]);
+      s.closePath();
+      return new THREE.ExtrudeGeometry(s,
+        { depth: 0.09, bevelEnabled: true, bevelThickness: 0.03, bevelSize: 0.03, bevelSegments: 1 });
+    });
+    /* Properly mirrored wing (shape mirrored + winding reversed) so the
+       hull can be single-sided: a negative-scale mirror only "worked"
+       because the material was DoubleSide, which also made thin panels
+       light up from behind as pale sheets. */
+    const wingGeoR = ShipGeo.get('ftr.wingR', () => {
+      const s = new THREE.Shape();
+      const rev = wingPts.slice().reverse();
+      s.moveTo(-rev[0][0], rev[0][1]);
+      for (let i = 1; i < rev.length; i++) s.lineTo(-rev[i][0], rev[i][1]);
+      s.closePath();
       return new THREE.ExtrudeGeometry(s,
         { depth: 0.09, bevelEnabled: true, bevelThickness: 0.03, bevelSize: 0.03, bevelSegments: 1 });
     });
     // everything shaded with the flashable hull → one merged mesh
-    const hullGeo = ShipGeo.get('ftr.hull', () => mergeGeos([
+    const hullGeo = ShipGeo.get('ftr.hull2', () => mergeGeos([
       { geo: new THREE.CylinderGeometry(0.24, 0.52, 3.0, 8), rot: [-Math.PI / 2, 0, 0], pos: [0, 0, 0.15] },
       { geo: new THREE.ConeGeometry(0.24, 1.2, 8), rot: [-Math.PI / 2, 0, 0], pos: [0, 0, -1.95] },
       { geo: new THREE.BoxGeometry(0.3, 0.18, 1.8), pos: [0, 0.3, 0.5] },
       { geo: wingGeo, rot: [-Math.PI / 2, 0, 0], pos: [0.52, -0.05, 0.55] },
-      { geo: wingGeo, rot: [-Math.PI / 2, 0, 0], pos: [-0.52, -0.05, 0.55], scale: [-1, 1, 1] },
+      { geo: wingGeoR, rot: [-Math.PI / 2, 0, 0], pos: [-0.52, -0.05, 0.55] },
       { geo: new THREE.CylinderGeometry(0.09, 0.12, 1.35, 6), rot: [-Math.PI / 2, 0, 0], pos: [2.06, -0.05, 0.1] },
       { geo: new THREE.CylinderGeometry(0.09, 0.12, 1.35, 6), rot: [-Math.PI / 2, 0, 0], pos: [-2.06, -0.05, 0.1] },
       { geo: new THREE.BoxGeometry(0.07, 0.7, 0.85), pos: [0.42, 0.45, 1.3], rot: [0, 0, -0.5] },
       { geo: new THREE.BoxGeometry(0.07, 0.7, 0.85), pos: [-0.42, 0.45, 1.3], rot: [0, 0, 0.5] },
       { geo: new THREE.BoxGeometry(0.06, 0.5, 0.75), pos: [0, -0.4, 1.2] },
       { geo: new THREE.CylinderGeometry(0.055, 0.055, 1.5, 6), rot: [-Math.PI / 2, 0, 0], pos: [0, -0.2, -1.3] },
+      /* swarm identity: hex chitin plates riveted along the wings + a
+         spiked collar behind the canopy (the doctrine's insect read) */
+      { geo: new THREE.CylinderGeometry(0.16, 0.15, 0.035, 6), pos: [1.15, 0.055, -0.1] },
+      { geo: new THREE.CylinderGeometry(0.16, 0.15, 0.035, 6), pos: [1.7, 0.055, 0.45] },
+      { geo: new THREE.CylinderGeometry(0.16, 0.15, 0.035, 6), pos: [-1.15, 0.055, -0.1] },
+      { geo: new THREE.CylinderGeometry(0.16, 0.15, 0.035, 6), pos: [-1.7, 0.055, 0.45] },
+      { geo: new THREE.ConeGeometry(0.07, 0.5, 5), rot: [Math.PI / 2, 0, 0], pos: [0.2, 0.34, 0.95] },
+      { geo: new THREE.ConeGeometry(0.07, 0.5, 5), rot: [Math.PI / 2, 0, 0], pos: [-0.2, 0.34, 0.95] },
+      /* nose chines — a pointed forebody instead of a bare cone */
+      { geo: new THREE.BoxGeometry(0.09, 0.16, 1.9), pos: [0.29, -0.02, -1.3], rot: [0, 0.06, 0] },
+      { geo: new THREE.BoxGeometry(0.09, 0.16, 1.9), pos: [-0.29, -0.02, -1.3], rot: [0, -0.06, 0] },
+      /* tail plates over the engine housings */
+      { geo: new THREE.BoxGeometry(0.34, 0.06, 0.7), pos: [0.34, 0.16, 1.5] },
+      { geo: new THREE.BoxGeometry(0.34, 0.06, 0.7), pos: [-0.34, 0.16, 1.5] },
     ]));
     model.add(new THREE.Mesh(hullGeo, hull));
     // dark trim: canopy glass, intakes, nozzles, canopy rail
-    const trimGeo = ShipGeo.get('ftr.trim', () => mergeGeos([
+    const trimGeo = ShipGeo.get('ftr.trim2', () => mergeGeos([
       { geo: new THREE.SphereGeometry(0.3, 10, 8), scale: [0.72, 0.5, 1.6], pos: [0, 0.26, -0.7] },
       { geo: new THREE.BoxGeometry(0.5, 0.06, 1.25), pos: [0, 0.43, -0.7] },
       { geo: new THREE.BoxGeometry(0.14, 0.2, 1.0), pos: [0.52, 0.02, 0.3] },
       { geo: new THREE.BoxGeometry(0.14, 0.2, 1.0), pos: [-0.52, 0.02, 0.3] },
       { geo: new THREE.CylinderGeometry(0.17, 0.24, 0.4, 8), rot: [-Math.PI / 2, 0, 0], pos: [0.34, 0, 1.72] },
       { geo: new THREE.CylinderGeometry(0.17, 0.24, 0.4, 8), rot: [-Math.PI / 2, 0, 0], pos: [-0.34, 0, 1.72] },
+      /* panel breaks + belly keel: value structure so the hull reads as
+         mass, not a silhouette with a colour fill */
+      { geo: new THREE.BoxGeometry(0.34, 0.04, 1.6), pos: [0, -0.3, 0.9] },
+      { geo: new THREE.BoxGeometry(0.5, 0.03, 1.9), pos: [0, 0.33, -0.5] },
+      { geo: new THREE.BoxGeometry(0.09, 0.24, 0.9), pos: [1.85, -0.02, 0.6] },
+      { geo: new THREE.BoxGeometry(0.09, 0.24, 0.9), pos: [-1.85, -0.02, 0.6] },
     ]));
     model.add(new THREE.Mesh(trimGeo, trim));
     // twin engine discs — individual meshes so each can flicker/pulse
@@ -224,6 +262,8 @@ class Fighter extends Enemy {
     this.model = model;
     this.spin = 0; this.rollDir = Math.random() < 0.5 ? 1 : -1;
     this._glowT = U.rand(0, 10);
+    if (this.engMeshes) addEngineRims(this.model || g, this.engMeshes, HULL.recess(), this.type || 'x');
+    dressHull(this);
     G.scene.add(g);
   }
 
@@ -271,7 +311,7 @@ class Fighter extends Enemy {
     _v3.set(0, 0, -1).applyQuaternion(this.quat);
     _v2.sub(this.pos).normalize();
     _v4.copy(this.pos).addScaledVector(_v3, 2.6); // muzzle in front of nose
-    Projectiles.fire('ebolt', 'enemy', _v4, _v2, { speed: E.boltSpeed, dmg: E.boltDmg, life: 3.5 });
+    Projectiles.fire('ebolt', 'enemy', _v4, _v2, { src: this, speed: E.boltSpeed, dmg: E.boltDmg, life: 3.5 });
     FX.muzzle(_v4, true);
     G.audio.shotBlaster(0.62);
   }
@@ -286,7 +326,11 @@ class Fighter extends Enemy {
     if (G.waves.escortActive() && this._allyFocus === undefined) {
       this._allyFocus = Math.random() < CFG.enemies.escortTargetChance;
     }
-    this.target = (this._allyFocus && G.waves.ally && G.waves.ally.alive) ? G.waves.ally : G.player;
+    /* §7 DISTRESS: raiders detailed to the beacon pod keep hitting it while
+       the call stands. Once it is saved (or lost) they revert to the player,
+       so a resolved call can never leave hostiles stuck on a dead target. */
+    if (this._podHunter && G.waves.distressActive()) this.target = G.waves.pod;
+    else this.target = (this._allyFocus && G.waves.ally && G.waves.ally.alive) ? G.waves.ally : G.player;
     const tgt = this.target;
     _v1.copy(tgt.pos).sub(this.pos);
     const dist = _v1.length();
@@ -468,10 +512,9 @@ class Gunship extends Enemy {
     const hull = new THREE.MeshStandardMaterial({
       color: elite ? 0x4a3a1a : 0x2c3440, metalness: 0.8, roughness: 0.42,
       emissive: elite ? 0xffc857 : 0xff7030, emissiveIntensity: elite ? 0.5 : 0.3,
-      side: THREE.DoubleSide, envMapIntensity: 1.1 });
+      envMapIntensity: 1.15 });
     this.flashMats.push({ mat: hull, base: hull.emissiveIntensity });
-    const trim = shared(new THREE.MeshStandardMaterial({
-      color: 0x171c24, metalness: 0.85, roughness: 0.4, envMapIntensity: 1.15 }));
+    const trim = HULL.recess(0x171c24);
     const glowMat = shared(new THREE.MeshBasicMaterial({
       color: elite ? new THREE.Color(2.6, 1.8, 0.6) : new THREE.Color(2.4, 1.1, 0.4) }));
 
@@ -487,6 +530,17 @@ class Gunship extends Enemy {
       { geo: new THREE.BoxGeometry(0.1, 1.05, 1.5), pos: [-0.95, 0.85, 2.6], rot: [0, 0, -0.45] },
       { geo: new THREE.BoxGeometry(1.05, 1.0, 4.2), pos: [2.25, -0.15, -4.3] },
       { geo: new THREE.BoxGeometry(1.05, 1.0, 4.2), pos: [-2.25, -0.15, -4.3] },
+      /* MILITIA doctrine: welded patch plates + exposed frame rails. The
+         hull is a fat industrial brick — it should look bolted together,
+         not moulded. */
+      { geo: new THREE.BoxGeometry(1.5, 0.14, 2.4), pos: [0, 1.55, -1.9] },      // bow deck patch
+      { geo: new THREE.BoxGeometry(1.9, 0.5, 0.5), pos: [0, 0.2, -5.6] },        // ram plate
+      { geo: new THREE.BoxGeometry(0.5, 0.5, 2.6), pos: [1.9, 0.9, -2.4], rot: [0, 0, 0.2] },
+      { geo: new THREE.BoxGeometry(0.5, 0.5, 2.6), pos: [-1.9, 0.9, -2.4], rot: [0, 0, -0.2] },
+      { geo: new THREE.BoxGeometry(0.34, 0.34, 1.3), pos: [2.9, 0.7, 3.0] },     // pod braces
+      { geo: new THREE.BoxGeometry(0.34, 0.34, 1.3), pos: [-2.9, 0.7, 3.0] },
+      { geo: new THREE.BoxGeometry(1.2, 0.3, 0.8), pos: [0, 1.6, 1.7] },         // sensor block
+      { geo: new THREE.BoxGeometry(1.1, 0.22, 3.0), pos: [0, -1.05, 1.2] },      // belly keel
     ]));
     model.add(new THREE.Mesh(hullGeo, hull));
     const trimGeo = ShipGeo.get('gun.trim', () => mergeGeos([
@@ -499,6 +553,14 @@ class Gunship extends Enemy {
       { geo: new THREE.CylinderGeometry(0.5, 0.34, 0.5, 8), rot: [-Math.PI / 2, 0, 0], pos: [-0.95, 0, 4.45] },
       { geo: new THREE.CylinderGeometry(0.34, 0.2, 0.9, 6), rot: [-Math.PI / 2, 0, 0], pos: [2.25, -0.15, -6.8] },
       { geo: new THREE.CylinderGeometry(0.34, 0.2, 0.9, 6), rot: [-Math.PI / 2, 0, 0], pos: [-2.25, -0.15, -6.8] },
+      /* panel breaks + hatches: value structure across the big slab sides */
+      { geo: new THREE.BoxGeometry(2.0, 0.05, 0.24), pos: [0, 0.92, -1.5] },
+      { geo: new THREE.BoxGeometry(2.0, 0.05, 0.24), pos: [0, 0.92, 2.4] },
+      { geo: new THREE.BoxGeometry(0.24, 0.05, 5.4), pos: [1.0, 1.5, 0.2] },
+      { geo: new THREE.BoxGeometry(0.24, 0.05, 5.4), pos: [-1.0, 1.5, 0.2] },
+      { geo: new THREE.BoxGeometry(0.28, 0.7, 1.1), pos: [3.0, -0.15, 1.2] },
+      { geo: new THREE.BoxGeometry(0.28, 0.7, 1.1), pos: [-3.0, -0.15, 1.2] },
+      { geo: new THREE.BoxGeometry(0.7, 0.5, 0.16), pos: [0, 0.1, 6.6] },        // stern vent
     ]));
     model.add(new THREE.Mesh(trimGeo, trim));
 
@@ -531,6 +593,8 @@ class Gunship extends Enemy {
     this.model = model;
     this._glowT = U.rand(0, 10);
     this.volleyN = 0;
+    if (this.engMeshes) addEngineRims(this.model || g, this.engMeshes, HULL.recess(), this.type || 'x');
+    dressHull(this);
     G.scene.add(g);
   }
 
@@ -543,7 +607,7 @@ class Gunship extends Enemy {
     for (const s of [-1, 1]) {
       _v4.copy(this.pos).addScaledVector(_v3, 3.5).addScaledVector(_v5, s * 2.3);
       _v2.copy(_v3).addScaledVector(_v5, s * 0.55).normalize();
-      Projectiles.fire('emissile', 'enemy', _v4, _v2, {
+      Projectiles.fire('emissile', 'enemy', _v4, _v2, { src: this,
         speed: 110, maxSpeed: 255, dmg: 12, life: 8,
         target: tgt, turn: 2.1, aoe: 12, aoeDmg: 9, hp: 1 });
     }
@@ -569,7 +633,7 @@ class Gunship extends Enemy {
       _v5.copy(_v2).sub(_v4).normalize();
       _v6.set(1, 0, 0).applyQuaternion(this.quat);
       _v5.addScaledVector(_v6, i * 0.045).normalize();
-      Projectiles.fire('ebolt', 'enemy', _v4, _v5, { speed: E.boltSpeed, dmg: E.boltDmg, life: 4 });
+      Projectiles.fire('ebolt', 'enemy', _v4, _v5, { src: this, speed: E.boltSpeed, dmg: E.boltDmg, life: 4 });
     }
     FX.muzzle(_v4, true);
     G.audio.shotBlaster(0.4);
@@ -726,6 +790,8 @@ class Turret extends Enemy {
     ring.rotation.x = Math.PI / 2; ring.position.y = 0.55;
     g.add(ring);
     this.mesh = g;
+    if (this.engMeshes) addEngineRims(this.model || g, this.engMeshes, HULL.recess(), this.type || 'x');
+    dressHull(this);
     G.scene.add(g);
   }
 
@@ -750,7 +816,7 @@ class Turret extends Enemy {
     _v3.set(0, 0, -1).applyQuaternion(this.quat);
     _v4.copy(this.pos).addScaledVector(_v3, 2.5);
     _v2.sub(this.pos).normalize();
-    Projectiles.fire('ebolt', 'enemy', _v4, _v2, { speed: E.boltSpeed, dmg: E.boltDmg, life: 3 });
+    Projectiles.fire('ebolt', 'enemy', _v4, _v2, { src: this, speed: E.boltSpeed, dmg: E.boltDmg, life: 3 });
     FX.muzzle(_v4, true);
     G.audio.shotBlaster(0.5);
   }
@@ -853,6 +919,8 @@ class Mine extends Enemy {
     g.add(core);
     g.position.copy(this.pos);
     this.mesh = g;
+    if (this.engMeshes) addEngineRims(this.model || g, this.engMeshes, HULL.recess(), this.type || 'x');
+    dressHull(this);
     G.scene.add(g);
   }
 
@@ -925,20 +993,25 @@ const Enemies = {
 
   spawnFighter(opts) {
     opts = opts || {};
+    // FIX(buttons): difficulty/modifiers never reached enemy stats
+    opts.hpMult = G.game.spawnHpMult(opts.hpMult);
+    opts.leadSkill = (opts.leadSkill || 0.7) * G.game.diffMult().ai.leadSkill;
     const pos = opts.pos || this._ringPos(new THREE.Vector3(), 620, 950, 0.7);
-    const f = new Fighter(pos, opts.hpMult || 1, opts.spdMult || 1,
-      opts.leadSkill || 0.7, opts.elite || false);
+    const f = new Fighter(pos, opts.hpMult, opts.spdMult || 1,
+      opts.leadSkill, opts.elite || false);
     this.list.push(f);
-    return f;
+    return applyEliteMods(f);   // FIX: the wave elites skipped this funnel
   },
 
   spawnGunship(opts) {
     opts = opts || {};
+    opts.hpMult = G.game.spawnHpMult(opts.hpMult);
+    opts.leadSkill = (opts.leadSkill || 0.75) * G.game.diffMult().ai.leadSkill;
     const pos = opts.pos || this._ringPos(new THREE.Vector3(), 700, 1000, 0.55);
-    const gs = new Gunship(pos, opts.hpMult || 1, opts.spdMult || 1,
-      opts.leadSkill || 0.75, opts.elite || false);
+    const gs = new Gunship(pos, opts.hpMult, opts.spdMult || 1,
+      opts.leadSkill, opts.elite || false);
     this.list.push(gs);
-    return gs;
+    return applyEliteMods(gs);   // FIX: HVTs skipped this too
   },
 
   spawnTurret(hostIdx, localOffset, fixedWorld) {
@@ -979,6 +1052,58 @@ const Enemies = {
     r.elite = !!opts.elite;
     this.list.push(r);
     return applyEliteMods(r);
+  },
+
+  /* UPGRADE(content v1.8): the two new hostiles. Same funnel as the
+     ravager — opts defaults, elite flag, applyEliteMods on the way out. */
+  spawnReaper(opts) {
+    opts = opts || {};
+    const pos = opts.pos || this._ringPos(new THREE.Vector3(), 1000, 1400, 0.6);
+    const r = new Reaper(pos, opts.hpMult || 1, opts.spdMult || 1, opts.leadSkill || 0.7);
+    r.elite = !!opts.elite;
+    this.list.push(r);
+    return applyEliteMods(r);
+  },
+
+  spawnProwler(opts) {
+    opts = opts || {};
+    // low front bias: prowlers are meant to arrive behind/beside the player
+    const pos = opts.pos || this._ringPos(new THREE.Vector3(), 700, 950, 0.35);
+    const p = new Prowler(pos, opts.hpMult || 1, opts.spdMult || 1, opts.leadSkill || 0.7);
+    p.elite = !!opts.elite;
+    this.list.push(p);
+    return applyEliteMods(p);
+  },
+
+  /* UPGRADE(content v1.8.1): cloak sniper, pod layer, repair hull —
+     the same funnel as the v1.8 pair above (opts defaults, elite flag,
+     applyEliteMods on the way out). */
+  spawnStalker(opts) {
+    opts = opts || {};
+    // low front bias: stalkers come in from the flanks, not the muzzle
+    const pos = opts.pos || this._ringPos(new THREE.Vector3(), 800, 1150, 0.4);
+    const s = new Stalker(pos, opts.hpMult || 1, opts.spdMult || 1, opts.leadSkill || 0.7);
+    s.elite = !!opts.elite;
+    this.list.push(s);
+    return applyEliteMods(s);
+  },
+
+  spawnSapper(opts) {
+    opts = opts || {};
+    const pos = opts.pos || this._ringPos(new THREE.Vector3(), 700, 1000, 0.5);
+    const s = new Sapper(pos, opts.hpMult || 1, opts.spdMult || 1, opts.leadSkill || 0.7);
+    s.elite = !!opts.elite;
+    this.list.push(s);
+    return applyEliteMods(s);
+  },
+
+  spawnWarden(opts) {
+    opts = opts || {};
+    const pos = opts.pos || this._ringPos(new THREE.Vector3(), 900, 1250, 0.4);
+    const w = new Warden(pos, opts.hpMult || 1, opts.spdMult || 1, opts.leadSkill || 0.7);
+    w.elite = !!opts.elite;
+    this.list.push(w);
+    return applyEliteMods(w);
   },
 
   spawnSentinel(opts) {
@@ -1067,7 +1192,8 @@ const Enemies = {
           _v1.copy(p.pos).sub(e.pos).normalize();
           p.vel.addScaledVector(_v1, 26);          // knock the player away
           e.damage(120, e.pos);                     // fighters die on impact
-          p.damage(CFG.enemies.contactDmg, p.pos);
+          // §4 NEMESIS: attribute the ram to the instance that did it
+          p.damage(CFG.enemies.contactDmg, p.pos, false, e);
           FX.addTrauma(0.4);
         }
       }
@@ -1134,11 +1260,10 @@ class Bomber extends Enemy {
     const model = new THREE.Group();
     g.add(model);
     const hull = new THREE.MeshStandardMaterial({
-      color: 0x2a2620, metalness: 0.75, roughness: 0.45,
-      emissive: 0xff9a20, emissiveIntensity: 0.3, side: THREE.DoubleSide });
+      color: 0x2a2620, metalness: 0.78, roughness: 0.44,
+      emissive: 0xff9a20, emissiveIntensity: 0.3, envMapIntensity: 1.1 });
     this.flashMats.push({ mat: hull, base: 0.3 });
-    const trim = shared(new THREE.MeshStandardMaterial({
-      color: 0x15130f, metalness: 0.85, roughness: 0.4 }));
+    const trim = HULL.recess(0x15130f);
     const glowMat = shared(new THREE.MeshBasicMaterial({ color: new THREE.Color(2.5, 1.2, 0.3) }));
 
     const hullGeo = ShipGeo.get('bmb.hull', () => mergeGeos([
@@ -1150,12 +1275,34 @@ class Bomber extends Enemy {
       { geo: new THREE.BoxGeometry(3.4, 0.5, 2.6), pos: [-2.6, -0.2, 2.0] },
       { geo: new THREE.BoxGeometry(0.16, 1.5, 1.6), pos: [2.6, 0.6, 3.0], rot: [0, 0, -0.4] },
       { geo: new THREE.BoxGeometry(0.16, 1.5, 1.6), pos: [-2.6, 0.6, 3.0], rot: [0, 0, 0.4] },
+      /* MILITIA read on a fat hull: armour patches welded over the nose
+         and flanks, rack ribbing, and a blunt tail shield */
+      { geo: new THREE.BoxGeometry(1.6, 0.5, 1.5), pos: [0, 1.5, -2.2] },
+      { geo: new THREE.BoxGeometry(2.4, 0.4, 1.2), pos: [0, 1.35, 3.4] },
+      { geo: new THREE.BoxGeometry(0.4, 0.4, 3.0), pos: [2.4, 0.6, 1.2] },
+      { geo: new THREE.BoxGeometry(0.4, 0.4, 3.0), pos: [-2.4, 0.6, 1.2] },
+      { geo: new THREE.BoxGeometry(1.7, 1.2, 0.5), pos: [0, 0, 7.2] },        // tail shield
+      { geo: new THREE.BoxGeometry(0.5, 0.4, 4.2), pos: [1.6, -1.4, 2.6] },
+      { geo: new THREE.BoxGeometry(0.5, 0.4, 4.2), pos: [-1.6, -1.4, 2.6] },
+      { geo: new THREE.BoxGeometry(0.8, 0.5, 1.0), pos: [0, -1.9, -1.2] },    // bay doors
+      { geo: new THREE.BoxGeometry(0.8, 0.5, 1.0), pos: [0, -1.9, 0.4] },
     ]));
     model.add(new THREE.Mesh(hullGeo, hull));
     const trimGeo = ShipGeo.get('bmb.trim', () => mergeGeos([
       { geo: new THREE.SphereGeometry(0.55, 8, 6), scale: [0.8, 0.6, 1.5], pos: [0, 0.9, -1.6] },  // cockpit
       { geo: new THREE.CylinderGeometry(0.95, 1.2, 0.5, 8), rot: [-Math.PI / 2, 0, 0], pos: [0, 0, 7.6] },
       { geo: new THREE.SphereGeometry(0.5, 8, 6), pos: [0, 2.15, -1.0] },     // bomb
+      /* rack ribs + hull panel breaks: the surfaces get scale and rhythm */
+      { geo: new THREE.BoxGeometry(0.86, 0.18, 0.22), pos: [0, 1.9, -1.4] },
+      { geo: new THREE.BoxGeometry(0.86, 0.18, 0.22), pos: [0, 1.9, 0.2] },
+      { geo: new THREE.BoxGeometry(0.86, 0.18, 0.22), pos: [0, 1.9, 1.8] },
+      { geo: new THREE.BoxGeometry(0.86, 0.18, 0.22), pos: [0, 1.9, 3.2] },
+      { geo: new THREE.BoxGeometry(3.6, 0.09, 0.3), pos: [0, 0.85, 2.6] },
+      { geo: new THREE.BoxGeometry(3.6, 0.09, 0.3), pos: [0, 0.5, 4.4] },
+      { geo: new THREE.BoxGeometry(0.3, 0.09, 3.0), pos: [1.9, 0.9, 3.0] },
+      { geo: new THREE.BoxGeometry(0.3, 0.09, 3.0), pos: [-1.9, 0.9, 3.0] },
+      { geo: new THREE.BoxGeometry(0.7, 0.6, 0.14), pos: [2.6, -0.2, 3.35] },  // stub trailing vents
+      { geo: new THREE.BoxGeometry(0.7, 0.6, 0.14), pos: [-2.6, -0.2, 3.35] },
       { geo: new THREE.SphereGeometry(0.5, 8, 6), pos: [0, 2.15, 1.4] },
     ]));
     model.add(new THREE.Mesh(trimGeo, trim));
@@ -1170,6 +1317,8 @@ class Bomber extends Enemy {
     this.mesh = g;
     this.model = model;
     this._glowT = U.rand(0, 10);
+    if (this.engMeshes) addEngineRims(this.model || g, this.engMeshes, HULL.recess(), this.type || 'x');
+    dressHull(this);
     G.scene.add(g);
   }
 
@@ -1187,7 +1336,7 @@ class Bomber extends Enemy {
     _v2.copy(tgt.pos).addScaledVector(tgt.vel, tGo * this.leadSkill * 1.35);
     _v2.x += U.rand(-14, 14); _v2.y += U.rand(-10, 10);
     _v2.sub(_v4).normalize();
-    Projectiles.fire('eheavy', 'enemy', _v4, _v2, {
+    Projectiles.fire('eheavy', 'enemy', _v4, _v2, { src: this,
       speed: E.shellSpeed, dmg: 0, life: 5, aoe: 18, aoeDmg: E.shellDmg, fuse: 0,
     });
     FX.muzzle(_v4, true);
@@ -1296,6 +1445,8 @@ class Drone extends Enemy {
     this.mesh = g;
     this.model = model;
     this._pulse = U.rand(0, 10);
+    if (this.engMeshes) addEngineRims(this.model || g, this.engMeshes, HULL.recess(), this.type || 'x');
+    dressHull(this);
     G.scene.add(g);
   }
 
@@ -1486,6 +1637,8 @@ class Boss extends Enemy {
     this.mesh = g;
     g.userData.ownGeo = true;   // Boss geometry is one-off — safe (and right) to free it
     g.position.copy(this.pos);
+    if (this.engMeshes) addEngineRims(this.model || g, this.engMeshes, HULL.recess(), this.type || 'x');
+    dressHull(this);
     G.scene.add(g);
   }
 
@@ -1707,7 +1860,7 @@ class Boss extends Enemy {
     _v3.set(1, 0, 0).applyQuaternion(this.quat);
     for (const o of [-4, 4]) {
       _v5.copy(_v2).addScaledVector(_v3, o * 0.01).normalize();
-      Projectiles.fire('eheavy', 'enemy', _v4, _v5, { speed: B.heavySpeed, dmg: B.heavyDmg, life: 5 });
+      Projectiles.fire('eheavy', 'enemy', _v4, _v5, { src: this, speed: B.heavySpeed, dmg: B.heavyDmg, life: 5 });
     }
     FX.muzzle(_v4, true);
     G.audio.shotBlaster(0.3);
@@ -1726,7 +1879,7 @@ class Boss extends Enemy {
     for (let i = 0; i < 18; i++) {
       const a = (i / 18) * U.TAU + U.rand(-0.1, 0.1);
       _v2.set(Math.cos(a), U.rand(-0.4, 0.4), Math.sin(a)).normalize();
-      Projectiles.fire('ebolt', 'enemy', _v1, _v2, {
+      Projectiles.fire('ebolt', 'enemy', _v1, _v2, { src: this,
         speed: 150, dmg: 0, life: 1.3, fuse: 1.2, aoeDmg: B.flakDmg });
     }
     G.audio.shotMissile();
@@ -1957,7 +2110,7 @@ class Boss extends Enemy {
               pod.obj.getWorldPosition(_v4);
               U.randomDir(_v2);
               _v2.multiplyScalar(0.4); _v2.z -= 1; _v2.normalize();
-              Projectiles.fire('emissile', 'enemy', _v4, _v2, {
+              Projectiles.fire('emissile', 'enemy', _v4, _v2, { src: this,
                 speed: 120, maxSpeed: 260, dmg: CFG.boss.missileDmg, life: 9,
                 target: G.player, turn: 2.2, aoe: 14, aoeDmg: 10, hp: 1 });
               G.audio.shotMissile();
@@ -2091,6 +2244,8 @@ class Ally {
     g.quaternion.setFromEuler(new THREE.Euler(U.rand(-0.3, 0.3), U.rand(0, 6.28), U.rand(-0.2, 0.2)));
     this.mesh = g;
     this.quat = g.quaternion;
+    if (this.engMeshes) addEngineRims(this.model || g, this.engMeshes, HULL.recess(), this.type || 'x');
+    dressHull(this);
     G.scene.add(g);
   }
 
@@ -2123,6 +2278,109 @@ class Ally {
     if (p.alive && p.pos.distanceTo(this.pos) < 80) {
       p.shield = Math.min(CFG.combat.shield, p.shield + 7 * dt);
     }
+  }
+
+  dispose() {
+    G.scene.remove(this.mesh);
+    this.mesh.traverse((o) => {
+      if (o.geometry && o.geometry.dispose) o.geometry.dispose();
+      if (o.material && o.material.dispose) o.material.dispose();
+    });
+  }
+}
+
+/* ============================================================
+   [SECTION 13a-2] DISTRESS POD — the §7 distress-call objective.
+   ------------------------------------------------------------
+   CFG.distress shipped as data + a CFG.radio.distress pool with nothing
+   behind either. This is the actor: a lifeboat that ejects into the arena
+   with a 45-second life-support clock, a strobe you can see from across
+   the sector, a RESCUE RING drawn at exactly the distance that counts as
+   "reached it", and enough hull to survive a little fire but not a
+   sustained one. Enemies detail a hunter element to kill it (see
+   CFG.distress.hunters); reaching it inside the ring extracts the
+   survivor and pays out.
+   Interface mirrors Ally (pos/vel/alive/hp/radius/update/damage/dispose)
+   so the wave director can hold it with the same plumbing.
+============================================================ */
+class Survivor {
+  constructor(pos) {
+    this.pos = pos.clone();
+    this.vel = U.randomDir(new THREE.Vector3()).multiplyScalar(1.1);
+    this.hp = this.maxHp = CFG.distress.podHp;
+    this.radius = CFG.distress.podRadius;
+    this.alive = true;
+    this.flash = 0;
+    this.tumble = U.randomDir(new THREE.Vector3()).normalize();
+    this._buildMesh();
+  }
+
+  _buildMesh() {
+    const g = new THREE.Group();
+    // pod skin: pale rescue-white so it reads as CIVILIAN against the fleet
+    const hull = new THREE.MeshStandardMaterial({ color: 0xa8b2bd, metalness: 0.5, roughness: 0.6,
+      emissive: 0xff7a3c, emissiveIntensity: 0.12 });
+    this.hullMat = hull;
+    const body = new THREE.Mesh(new THREE.CylinderGeometry(1.7, 1.7, 4.6, 10), hull);
+    body.rotation.x = Math.PI / 2;
+    g.add(body);
+    const nose = new THREE.Mesh(new THREE.SphereGeometry(1.7, 10, 8, 0, Math.PI * 2, 0, Math.PI / 2), hull);
+    nose.rotation.x = -Math.PI / 2; nose.position.z = -2.3;
+    g.add(nose);
+    // hatch collar + two RCS bottles
+    const collar = new THREE.Mesh(new THREE.TorusGeometry(1.75, 0.16, 4, 12), hull);
+    collar.position.z = 0.6;
+    g.add(collar);
+    for (const s of [-1, 1]) {
+      const bot = new THREE.Mesh(new THREE.CylinderGeometry(0.42, 0.42, 2.2, 6), hull);
+      bot.position.set(s * 1.9, -0.2, 0.8);
+      g.add(bot);
+    }
+    /* heavy distress strobe — >1 color range so bloom carries it (this is
+       the "you can see the beacon" read the radio lines promise) */
+    this.strobe = new THREE.Mesh(new THREE.SphereGeometry(0.55, 8, 6),
+      new THREE.MeshBasicMaterial({ color: new THREE.Color(2.6, 0.7, 0.3) }));
+    this.strobe.position.set(0, 2.0, -0.4);
+    g.add(this.strobe);
+    /* RESCUE RING: drawn at CFG.distress.rescueRadius, so the mechanic is
+       legible in the world instead of only in the HUD text */
+    this.ring = new THREE.Mesh(new THREE.TorusGeometry(CFG.distress.rescueRadius, 0.5, 6, 48),
+      new THREE.MeshBasicMaterial({ color: 0x58ffb0, transparent: true, opacity: 0.16,
+        blending: THREE.AdditiveBlending, depthWrite: false }));
+    this.ring.rotation.x = Math.PI / 2;
+    g.add(this.ring);
+    g.position.copy(this.pos);
+    this.mesh = g;
+    this.quat = g.quaternion;
+    G.scene.add(g);
+  }
+
+  damage(dmg, pos) {
+    if (!this.alive || dmg <= 0) return;
+    this.hp -= dmg;
+    this.flash = 1;
+    if (this.hp <= 0) {
+      this.hp = 0; this.alive = false;
+      FX.explosion(this.pos, 9);
+      FX.rings.spawn(this.pos, 34, 0xff7a3c, 0.7);
+      G.audio.bigBoom();
+      FX.addTrauma(0.4);
+      G.waves.distressLost();
+    }
+  }
+
+  update(dt) {
+    if (!this.alive) { this.mesh.visible = false; return; }
+    this.flash = Math.max(0, this.flash - 4 * dt);
+    this.hullMat.emissiveIntensity = 0.12 + this.flash * 2.2;
+    // slow helpless tumble + drift (it has no drive left)
+    this.pos.addScaledVector(this.vel, dt);
+    this.mesh.position.copy(this.pos);
+    _q1.setFromAxisAngle(this.tumble, 0.35 * dt);
+    this.quat.premultiply(_q1);
+    // strobe: fast pulse while the clock runs (see Waves._updateDistress)
+    this.strobe.visible = Math.sin(performance.now() * 0.009) > -0.2;
+    this.ring.material.opacity = 0.11 + 0.07 * Math.sin(performance.now() * 0.005);
   }
 
   dispose() {
@@ -2187,6 +2445,8 @@ class Vanguard {
     this.mesh = g;
     this.model = model;
     this._glowT = U.rand(0, 10);
+    if (this.engMeshes) addEngineRims(this.model || g, this.engMeshes, HULL.recess(), this.type || 'x');
+    dressHull(this);
     G.scene.add(g);
   }
 
@@ -2266,8 +2526,9 @@ class Vanguard {
   }
 
   enginePuffVan() {
+    // +Z = aft (same fix as Enemy.enginePuff — puffs trail the nozzles)
     _v1.set(0, 0, 1).applyQuaternion(this.quat);
-    _v2.copy(this.pos).addScaledVector(_v1, -2.2);
+    _v2.copy(this.pos).addScaledVector(_v1, 2.2);
     FX.particles.spawn(_v2.x, _v2.y, _v2.z, _v1.x * 10, _v1.y * 10, _v1.z * 10,
       0.4, 1, 0.7, 0.5, 0.2, 2, 0.3);
   }
@@ -2384,6 +2645,8 @@ class Interdictor extends Enemy {
     this.mesh = g;
     this.model = model;
     this._glowT = U.rand(0, 10);
+    if (this.engMeshes) addEngineRims(this.model || g, this.engMeshes, HULL.recess(), this.type || 'x');
+    dressHull(this);
     G.scene.add(g);
   }
 
@@ -2469,7 +2732,7 @@ class Interdictor extends Enemy {
         _v2.copy(p.pos).addScaledVector(p.vel, tGo * this.leadSkill)
            .addScaledVector(_v6.set(p.vel.z, 0, -p.vel.x).normalize(), i * 9)
            .sub(_v4).normalize();
-        Projectiles.fire('eheavy', 'enemy', _v4, _v2, { speed: E.boltSpeed, dmg: E.boltDmg, life: 3 });
+        Projectiles.fire('eheavy', 'enemy', _v4, _v2, { src: this, speed: E.boltSpeed, dmg: E.boltDmg, life: 3 });
       }
       FX.muzzle(_v4, true);
       G.audio.shotHeavy();
@@ -2538,6 +2801,8 @@ class LancerAlly {
     g.position.copy(this.pos);
     this.mesh = g;
     this._glowT = U.rand(0, 10);
+    if (this.engMeshes) addEngineRims(this.model || g, this.engMeshes, HULL.recess(), this.type || 'x');
+    dressHull(this);
     G.scene.add(g);
   }
 
@@ -2660,6 +2925,8 @@ class HornetWing {
     body.rotation.z = 0.6;
     g.add(body);
     d.mesh = g;
+    if (this.engMeshes) addEngineRims(this.model || g, this.engMeshes, HULL.recess(), this.type || 'x');
+    dressHull(this);
     G.scene.add(g);
     return d;
   }
@@ -2773,19 +3040,24 @@ class Ravager extends Enemy {
     const model = new THREE.Group();
     g.add(model);
     const hull = new THREE.MeshStandardMaterial({
-      color: 0x32261c, metalness: 0.8, roughness: 0.44,
-      emissive: 0xff6a1a, emissiveIntensity: 0.26, side: THREE.DoubleSide });
+      color: 0x32261c, metalness: 0.8, roughness: 0.44, envMapIntensity: 1.1,
+      emissive: 0xff6a1a, emissiveIntensity: 0.26 });
     this.flashMats.push({ mat: hull, base: 0.26 });
-    const trim = shared(new THREE.MeshStandardMaterial({ color: 0x1a140e, metalness: 0.86, roughness: 0.42 }));
+    const trim = HULL.recess(0x1a140e);
     const glowMat = shared(new THREE.MeshBasicMaterial({ color: new THREE.Color(2.6, 0.9, 0.25) }));
-    const hullGeo = ShipGeo.get('rav.hull', () => mergeGeos([
+    const hullGeo = ShipGeo.get('rav.hull2', () => mergeGeos([
       { geo: new THREE.BoxGeometry(5.6, 2.6, 9), pos: [0, 0, 0.6] },
       { geo: new THREE.ConeGeometry(2.8, 4.6, 4), rot: [-Math.PI / 2, 0, 0], pos: [0, 0, -6.4], scale: [1, 1, 0.7] },
       { geo: new THREE.BoxGeometry(9.6, 0.6, 3.4), pos: [0, -0.6, 1.4] },        // minesweeper wing
       { geo: new THREE.BoxGeometry(0.4, 3.4, 2.4), pos: [4.8, 0.2, -2.4], rot: [0, 0, -0.5] },  // blades
       { geo: new THREE.BoxGeometry(0.4, 3.4, 2.4), pos: [-4.8, 0.2, -2.4], rot: [0, 0, 0.5] },
-      { geo: new THREE.CylinderGeometry(0.7, 0.9, 3.4, 6), rot: [-Math.PI / 2, 0, 0], pos: [1.8, 1.2, -1.8] },  // stacks
-      { geo: new THREE.CylinderGeometry(0.7, 0.9, 3.4, 6), rot: [-Math.PI / 2, 0, 0], pos: [-1.8, 1.2, -1.8] },
+      /* FIX(silhouette): the exhaust stacks ran the WRONG way and ended
+         amidships, so the engine discs floated buried inside the hull —
+         nothing glowed from the stern. The stacks now run aft along the
+         deck and the discs sit proud of the tail. */
+      { geo: new THREE.CylinderGeometry(0.62, 0.82, 7.0, 6), rot: [-Math.PI / 2, 0, 0], pos: [1.8, 1.55, 1.6] },
+      { geo: new THREE.CylinderGeometry(0.62, 0.82, 7.0, 6), rot: [-Math.PI / 2, 0, 0], pos: [-1.8, 1.55, 1.6] },
+      { geo: new THREE.BoxGeometry(4.4, 0.3, 0.9), pos: [0, 1.9, 3.2] },          // stack brace
     ]));
     model.add(new THREE.Mesh(hullGeo, hull));
     const trimGeo = ShipGeo.get('rav.trim', () => mergeGeos([
@@ -2793,16 +3065,18 @@ class Ravager extends Enemy {
       { geo: new THREE.BoxGeometry(3.2, 0.5, 2.2), pos: [0, -1.7, -0.8] },
     ]));
     model.add(new THREE.Mesh(trimGeo, trim));
-    const engGeo = ShipGeo.get('rav.eng', () => new THREE.CircleGeometry(0.8, 10));
+    const engGeo = ShipGeo.get('rav.eng', () => new THREE.CircleGeometry(0.68, 10));
     this.engMeshes = [];
     for (const s of [-1, 1]) {
       const e = new THREE.Mesh(engGeo, glowMat);
-      e.position.set(s * 1.8, 1.2, 2.8);
+      e.position.set(s * 1.8, 1.55, 5.25);
       model.add(e); this.engMeshes.push(e);
     }
     g.position.copy(this.pos);
     this.mesh = g; this.model = model;
     this._glowT = U.rand(0, 10);
+    if (this.engMeshes) addEngineRims(this.model || g, this.engMeshes, HULL.recess(), this.type || 'x');
+    dressHull(this);
     G.scene.add(g);
   }
 
@@ -2820,7 +3094,7 @@ class Ravager extends Enemy {
     _v2.copy(tgt.pos).addScaledVector(tgt.vel, tGo * this.leadSkill)
        .add(_v5.copy(U.randomDir(_v6)).multiplyScalar(9))
        .sub(_v4).normalize();
-    Projectiles.fire('ebolt', 'enemy', _v4, _v2, { speed: E.flakSpeed, dmg: E.flakDmg, life: 1.6 });
+    Projectiles.fire('ebolt', 'enemy', _v4, _v2, { src: this, speed: E.flakSpeed, dmg: E.flakDmg, life: 1.6 });
     FX.muzzle(_v4, true);
   }
 
@@ -2943,6 +3217,8 @@ class Sentinel extends Enemy {
     g.position.copy(this.pos);
     this.mesh = g; this.model = model;
     this._glowT = U.rand(0, 10);
+    if (this.engMeshes) addEngineRims(this.model || g, this.engMeshes, HULL.recess(), this.type || 'x');
+    dressHull(this);
     G.scene.add(g);
   }
 
@@ -3019,7 +3295,7 @@ class Sentinel extends Enemy {
       if (gd.fireT <= 0 && dist < E.fireRange) {
         gd.fireT = U.rand(1.6, 2.6);
         _v3.copy(tgt.pos).sub(gd.pos).normalize();
-        Projectiles.fire('ebolt', 'enemy', gd.pos, _v3, { speed: E.guardSpeed, dmg: E.guardDmg, life: 1.6 });
+        Projectiles.fire('ebolt', 'enemy', gd.pos, _v3, { src: this, speed: E.guardSpeed, dmg: E.guardDmg, life: 1.6 });
         G.audio.shotBlaster(0.5);
       }
     }
@@ -3085,6 +3361,8 @@ class Aegis {
     g.position.copy(this.pos);
     this.mesh = g;
     this._glowT = U.rand(0, 10);
+    if (this.engMeshes) addEngineRims(this.model || g, this.engMeshes, HULL.recess(), this.type || 'x');
+    dressHull(this);
     G.scene.add(g);
   }
 
@@ -3167,16 +3445,18 @@ class Interceptor extends Enemy {
     this._buildMesh();
   }
 
-  /* needle dart: narrow nose, swept stub-wings, single hot engine */
+  /* needle dart: narrow nose, swept canards, single hot engine */
   _buildMesh() {
     const g = new THREE.Group();
     const model = new THREE.Group();
     g.add(model);
+    /* FrontSide: every piece here is a closed solid, so double-siding only
+       bought see-through shading artifacts (and 2x fragment cost) */
     const hull = new THREE.MeshStandardMaterial({
-      color: 0x30243c, metalness: 0.82, roughness: 0.36,
-      emissive: 0xff4ad8, emissiveIntensity: 0.26, side: THREE.DoubleSide });
+      color: 0x30243c, metalness: 0.82, roughness: 0.36, envMapIntensity: 1.15,
+      emissive: 0xff4ad8, emissiveIntensity: 0.26 });
     this.flashMats.push({ mat: hull, base: 0.26 });
-    const trim = shared(new THREE.MeshStandardMaterial({ color: 0x191222, metalness: 0.88, roughness: 0.4 }));
+    const trim = HULL.recess(0x191222);
     const glowMat = shared(new THREE.MeshBasicMaterial({ color: new THREE.Color(2.6, 0.6, 2.2) }));
     const hullGeo = ShipGeo.get('itc.hull', () => mergeGeos([
       { geo: new THREE.ConeGeometry(1.05, 6.4, 6), rot: [-Math.PI / 2, 0, 0], scale: [1, 0.62, 1] },
@@ -3185,21 +3465,36 @@ class Interceptor extends Enemy {
       { geo: new THREE.BoxGeometry(0.16, 1.3, 1.3), pos: [2.5, 0.35, 2.2], rot: [0, 0, -0.5] },
       { geo: new THREE.BoxGeometry(0.16, 1.3, 1.3), pos: [-2.5, 0.35, 2.2], rot: [0, 0, 0.5] },
       { geo: new THREE.BoxGeometry(0.3, 0.5, 2.2), pos: [0, 0.8, 0.4] },         // spine
+      /* forward-swept canards: the duelist's signature (the fighter's
+         planform stays a straight dart, so the two never confuse) */
+      { geo: new THREE.BoxGeometry(1.5, 0.08, 0.62), pos: [0.95, 0.06, -1.45], rot: [0, 0.5, 0] },
+      { geo: new THREE.BoxGeometry(1.5, 0.08, 0.62), pos: [-0.95, 0.06, -1.45], rot: [0, -0.5, 0] },
+      /* nose chines: sharp forebody edges instead of a bare cone */
+      { geo: new THREE.BoxGeometry(0.14, 0.2, 3.4), pos: [0.55, 0.02, -1.2], rot: [0, 0.06, 0] },
+      { geo: new THREE.BoxGeometry(0.14, 0.2, 3.4), pos: [-0.55, 0.02, -1.2], rot: [0, -0.06, 0] },
+      /* ventral strakes */
+      { geo: new THREE.BoxGeometry(0.1, 0.5, 2.0), pos: [0.6, -0.55, 1.9], rot: [0, 0, 0.22] },
+      { geo: new THREE.BoxGeometry(0.1, 0.5, 2.0), pos: [-0.6, -0.55, 1.9], rot: [0, 0, -0.22] },
     ]));
     model.add(new THREE.Mesh(hullGeo, hull));
     const trimGeo = ShipGeo.get('itc.trim', () => mergeGeos([
       { geo: new THREE.SphereGeometry(0.45, 8, 6), scale: [0.75, 0.55, 1.4], pos: [0, 0.55, -1.2] },  // canopy
       { geo: new THREE.BoxGeometry(0.5, 0.14, 1.7), pos: [0, -0.45, -0.4] },     // chin gun
+      { geo: new THREE.BoxGeometry(0.52, 0.5, 0.5), pos: [0, 0.72, 1.75] },      // spine housing
+      { geo: new THREE.BoxGeometry(0.1, 0.34, 1.5), pos: [0.72, 0.1, 2.6] },     // wing-root wells
+      { geo: new THREE.BoxGeometry(0.1, 0.34, 1.5), pos: [-0.72, 0.1, 2.6] },
     ]));
     model.add(new THREE.Mesh(trimGeo, trim));
-    const engGeo = ShipGeo.get('itc.eng', () => new THREE.CircleGeometry(0.5, 10));
+    const engGeo = ShipGeo.get('itc.eng', () => new THREE.CircleGeometry(0.78, 12));
     this.engMeshes = [];
     const e = new THREE.Mesh(engGeo, glowMat);
-    e.position.set(0, 0, 5.7);
+    e.position.set(0, 0, 5.76);      // aft of the nozzle face — never occluded
     model.add(e); this.engMeshes.push(e);
     g.position.copy(this.pos);
     this.mesh = g; this.model = model;
     this._glowT = U.rand(0, 10);
+    if (this.engMeshes) addEngineRims(this.model || g, this.engMeshes, HULL.recess(), this.type || 'x');
+    dressHull(this);
     G.scene.add(g);
   }
 
@@ -3217,7 +3512,7 @@ class Interceptor extends Enemy {
     const tGo = dist / E.boltSpeed;
     _v2.copy(tgt.pos).addScaledVector(tgt.vel, tGo * this.leadSkill * 1.5);
     _v2.sub(_v4).normalize();
-    Projectiles.fire('ebolt', 'enemy', _v4, _v2, {
+    Projectiles.fire('ebolt', 'enemy', _v4, _v2, { src: this,
       speed: E.boltSpeed, dmg: E.boltDmg, life: 1.8 });
     FX.muzzle(_v4, true);
     G.audio.shotBlaster(0.35);
@@ -3344,6 +3639,8 @@ class Hive extends Enemy {
     this.mesh = g; this.model = model;
     this._glowT = U.rand(0, 10);
     this.sacMesh = model.children[0];
+    if (this.engMeshes) addEngineRims(this.model || g, this.engMeshes, HULL.recess(), this.type || 'x');
+    dressHull(this);
     G.scene.add(g);
   }
 
@@ -3429,6 +3726,10 @@ function applyEliteMods(e) {
   const keys = Object.keys(CFG.eliteMods);
   const mod = CFG.eliteMods[keys[(Math.random() * keys.length) | 0]];
   e.eliteMod = mod.tag;
+  /* the "#target-tag" HUD element shipped with nothing feeding it: every
+     elite carries a callsign from CFG.namedElite so the prize ship reads
+     as an ace with a name and a modifier instead of a gold blob. */
+  if (!e.callsign && CFG.namedElite && CFG.namedElite.names) e.callsign = U.pick(CFG.namedElite.names);
   if (mod.hpMult) { e.hp *= mod.hpMult; e.maxHp *= mod.hpMult; }
   if (mod.speedMult) e.spdMult = (e.spdMult || 1) * mod.speedMult;
   if (mod.turnMult) e.turnMult = (e.turnMult || 1) * mod.turnMult;
@@ -3443,4 +3744,1464 @@ function applyEliteMods(e) {
     e._eliteStripe = stripe;
   }
   return e;
+}
+
+/* ============================================================
+   UPGRADE(content v1.8) — NEW ACTORS
+   ------------------------------------------------------------
+   Two hostile archetypes that change the SHAPE of a fight, plus
+   two ally craft. The stat tables live here in V18 because
+   data.js's CFG ships without these keys; the wave director and
+   cheat console reach the hostiles through
+   Enemies.spawnReaper / Enemies.spawnProwler.
+     REAPER      — long-range sniper tank. Holds a 900-1400
+                   standoff band, strafes laterally, and charges
+                   a telegraphed rail slug every few seconds.
+     PROWLER     — fast mine-layer skirmisher. Drops mines in the
+                   player's lap, plinks at range, flees when the
+                   player closes. Deliberately a small silhouette.
+     WASP WING   — 4 fast interceptor drones, 3-round volleys.
+     SALVAGE TUG — repair craft: a green beam patches the hull.
+   ============================================================ */
+const V18 = {
+  reaper:  { hp: 220, speed: 46, accel: 20, turn: 0.7, radius: 6, size: 7, score: 550,
+             minRange: 900, maxRange: 1400, chargeTime: 1.4,
+             boltSpeed: 1350, boltDmg: 26, boltLife: 4, dropChance: 0.7 },
+  prowler: { hp: 95, speed: 130, accel: 70, turn: 2.4, radius: 2.6, size: 3, score: 220,
+             nearRange: 500, farRange: 700, fleeRange: 300, fleeTo: 900,
+             boltSpeed: 430, boltDmg: 5, boltLife: 2, dropChance: 0.3 },
+  /* UPGRADE(content v1.8.1) — the three archetypes built by the
+     STALKER/SAPPER/WARDEN block below. Same reason as the v1.8 pair:
+     data.js's CFG ships without these keys. */
+  stalker: { hp: 130, speed: 115, accel: 55, turn: 1.6, radius: 3, size: 4, score: 300,
+             nearRange: 600, farRange: 1000, telegraph: 0.7, cool: 1.6,
+             boltSpeed: 1150, boltDmg: 22, boltLife: 3.5, dropChance: 0.35 },
+  sapper:  { hp: 180, speed: 95, accel: 45, turn: 1.1, radius: 4, size: 5, score: 320,
+             nearRange: 500, farRange: 800, fleeRange: 300, fleeTo: 950,
+             boltSpeed: 520, boltDmg: 6, boltLife: 2, dropChance: 0.4 },
+  warden:  { hp: 260, speed: 85, accel: 40, turn: 1.0, radius: 5, size: 6, score: 420,
+             standoff: 800, healRange: 500, healPerSec: 6,
+             boltSpeed: 480, boltDmg: 5, boltLife: 2, dropChance: 0.5 },
+};
+
+/* UPGRADE(content v1.8) — REAPER: long-range sniper tank.
+   Range-keeping is the whole identity: it refuses to brawl, drifting
+   sideways inside its band while a charging muzzle ring telegraphs the
+   rail slug. One shot, hard hit, then the cycle restarts. */
+class Reaper extends Enemy {
+  constructor(pos, hpMult, spdMult, leadSkill) {
+    super('reaper');
+    const E = V18.reaper;
+    this.pos.copy(pos);
+    this.hp = this.maxHp = E.hp * (hpMult || 1);
+    this.radius = E.radius;
+    this.size = E.size;
+    this.scoreVal = E.score;
+    this.dropChance = E.dropChance;
+    this.waveEnemy = true;
+    this.spdMult = spdMult || 1;
+    this.leadSkill = leadSkill || 0.7;
+    this.stateT = 0;
+    this.jinkSeed = U.rand(0, 100);
+    this.fireT = U.rand(2, 3.4);
+    this.charging = false;
+    this.chargeT = 0;
+    this._buildMesh();
+  }
+
+  /* siege sniper: chunky slab hull, outrigger stabilizers, a long thin
+     barrel down the nose and a sensor dish on the spine. Reads as a
+     standoff weapon at a glance, not a brawler. */
+  _buildMesh() {
+    const g = new THREE.Group();
+    const model = new THREE.Group();
+    g.add(model);
+    const hull = new THREE.MeshStandardMaterial({
+      color: 0x2d3128, metalness: 0.82, roughness: 0.4, envMapIntensity: 1.15,
+      emissive: 0xd6ff42, emissiveIntensity: 0.26 });
+    this.flashMats.push({ mat: hull, base: 0.26 });
+    const trim = HULL.recess(0x171a12);
+    const glowMat = shared(new THREE.MeshBasicMaterial({ color: new THREE.Color(2.2, 2.6, 0.6) }));
+    const hullGeo = ShipGeo.get('rep.hull', () => mergeGeos([
+      HULL.box(3.2, 1.8, 6.0, [0, 0, 0.8]),                        // slab core
+      HULL.box(2.2, 1.1, 2.2, [0, 0.25, -3.2]),                    // glacis shoulder
+      HULL.cone(1.2, 2.6, 6, [0, 0.05, -4.4], [-Math.PI / 2, 0, 0], [1, 0.72, 1]),
+      /* the barrel: long, thin, unmistakable */
+      HULL.cyl(0.15, 0.2, 8.4, 8, [0, 0.2, -8.9], [-Math.PI / 2, 0, 0]),
+      HULL.cyl(0.34, 0.34, 1.6, 8, [0, 0.2, -5.2], [-Math.PI / 2, 0, 0]),   // barrel shroud
+      HULL.cyl(0.26, 0.3, 0.5, 8, [0, 0.2, -12.9], [-Math.PI / 2, 0, 0]),   // muzzle brake
+      /* outrigger stabilizers planted wide of the hull */
+      HULL.box(0.55, 0.5, 3.4, [1.9, -0.35, -1.2]),
+      HULL.box(0.55, 0.5, 3.4, [-1.9, -0.35, -1.2]),
+      HULL.box(1.6, 0.4, 4.2, [0, 1.15, 1.2]),                     // dorsal deck
+    ]));
+    model.add(new THREE.Mesh(hullGeo, hull));
+    const trimGeo = ShipGeo.get('rep.trim', () => mergeGeos([
+      HULL.sph(0.5, 8, [0, 1.0, -2.0], [0.8, 0.5, 1.5]),           // canopy blister
+      HULL.cyl(0.09, 0.12, 1.1, 5, [0, 1.8, 0.6]),                 // dish mast
+      HULL.cyl(1.25, 1.25, 0.18, 10, [0, 2.35, 0.6], [Math.PI / 3, 0, 0]),  // sensor dish
+      HULL.box(0.6, 0.9, 0.5, [0, 1.75, 3.0]),                     // stern housing
+    ]));
+    model.add(new THREE.Mesh(trimGeo, trim));
+    const engGeo = ShipGeo.get('rep.eng', () => new THREE.CircleGeometry(0.5, 10));
+    this.engMeshes = [];
+    for (const s of [-1, 1]) {
+      const e = new THREE.Mesh(engGeo, glowMat);
+      e.position.set(s * 1.15, 0, 3.95);
+      model.add(e); this.engMeshes.push(e);
+    }
+    /* telegraphed muzzle: a ring that swells + brightens through the charge.
+       Cached geometry (never disposed), per-instance material (animated). */
+    this.chargeMat = new THREE.MeshBasicMaterial({
+      color: new THREE.Color(1.4, 1.6, 0.5), transparent: true, opacity: 0,
+      blending: THREE.AdditiveBlending, depthWrite: false });
+    this.chargeMesh = new THREE.Mesh(
+      ShipGeo.get('rep.ring', () => new THREE.TorusGeometry(0.52, 0.14, 6, 14)), this.chargeMat);
+    this.chargeMesh.position.set(0, 0.2, -13.1);
+    this.chargeMesh.visible = false;
+    model.add(this.chargeMesh);
+    g.position.copy(this.pos);
+    this.mesh = g; this.model = model;
+    this._glowT = U.rand(0, 10);
+    if (this.engMeshes) addEngineRims(this.model || g, this.engMeshes, HULL.recess(), this.type || 'x');
+    dressHull(this);
+    G.scene.add(g);
+  }
+
+  /* one fast heavy slug down the bore, leading the player's motion */
+  _fireRail(tgt) {
+    const E = V18.reaper;
+    _v3.set(0, 0, -1).applyQuaternion(this.quat);
+    _v4.copy(this.pos).addScaledVector(_v3, this.radius + 7.2);   // muzzle = barrel tip
+    const dist = _v1.copy(tgt.pos).sub(this.pos).length();
+    const tGo = dist / E.boltSpeed;
+    _v2.copy(tgt.pos).addScaledVector(tgt.vel, tGo * this.leadSkill).sub(_v4).normalize();
+    Projectiles.fire('eheavy', 'enemy', _v4, _v2, { src: this, speed: E.boltSpeed, dmg: E.boltDmg, life: E.boltLife });
+    FX.muzzle(_v4, true);
+    G.audio.shotHeavy();
+  }
+
+  update(dt) {
+    const E = V18.reaper;
+    this.stateT += dt;
+    this.updateFlash(dt);
+    const tgt = G.player;
+    const dist = _v1.copy(tgt.pos).sub(this.pos).length();
+    const speed = E.speed * this.spdMult;
+
+    // standoff band: back away inside min, close beyond max, else strafe
+    if (dist < E.minRange) {
+      _v2.copy(this.pos).sub(tgt.pos).normalize().multiplyScalar(dist + 260).add(tgt.pos);
+      this.steerToward(_v2, dt, speed, E.accel, 60);
+    } else if (dist > E.maxRange) {
+      this.steerToward(tgt.pos, dt, speed, E.accel, 60);
+    } else {
+      // lateral sinusoid — the same lead-jink idea as the fighter, softened
+      _v2.copy(this.pos).sub(tgt.pos); _v2.y = 0;
+      if (_v2.lengthSq() < 1e-4) _v2.set(1, 0, 0);
+      _v3.set(-_v2.z, 0, _v2.x).normalize()
+         .multiplyScalar(Math.sin(this.stateT * 0.6 + this.jinkSeed) * 95).add(this.pos);
+      this.steerToward(_v3, dt, speed * 0.6, E.accel * 0.6, 30);
+    }
+    this.faceTowards(tgt.pos, E.turn, dt);
+
+    this.avoidGround(dt, 70);
+    if (this.vel.length() > speed * 1.2) this.vel.setLength(speed * 1.2);
+    this.pos.addScaledVector(this.vel, dt);
+    this.mesh.position.copy(this.pos);
+    this.mesh.quaternion.copy(this.quat);
+
+    this._glowT += dt;
+    const gs = 0.9 + Math.sin(this._glowT * 11) * 0.12;
+    for (const e of this.engMeshes) e.scale.setScalar(gs);
+
+    // rail cycle: charge (glow telegraphs) → fire → cooldown
+    this.fireT -= dt;
+    if (!this.charging && this.fireT <= 0 && dist < E.maxRange * 1.6) {
+      _v3.set(0, 0, -1).applyQuaternion(this.quat);
+      _v2.copy(tgt.pos).sub(this.pos).normalize();
+      if (_v3.dot(_v2) > 0.93) { this.charging = true; this.chargeT = E.chargeTime; }
+    }
+    if (this.charging) {
+      this.chargeT -= dt;
+      const p = U.clamp(1 - this.chargeT / E.chargeTime, 0, 1);
+      this.chargeMesh.visible = true;
+      this.chargeMesh.scale.setScalar(0.5 + p * 1.9);
+      this.chargeMat.opacity = 0.15 + p * 0.85;
+      this.chargeMat.color.setRGB(1.2 + p * 2.0, 1.5 + p * 1.6, 0.4 + p * 0.7);
+      if (this.chargeT <= 0) {
+        this.charging = false;
+        this.chargeMesh.visible = false;
+        this.fireT = U.rand(3, 4);
+        this._fireRail(tgt);
+      }
+    }
+    if (Math.random() < 0.4) this.enginePuff([1, 1, 0.35]);
+  }
+}
+
+/* UPGRADE(content v1.8) — PROWLER: fast mine-layer skirmisher.
+   FSM: in (close to the 500-700 band) → drop (hold the band, swing
+   sideways, release a mine from the ventral bay) → flee (the player
+   got inside 300: burn off to 900 and re-enter). Mine ammo trickles
+   back one every 3s, capped at 2. A failsafe re-enters from any hold. */
+class Prowler extends Enemy {
+  constructor(pos, hpMult, spdMult, leadSkill) {
+    super('prowler');
+    const E = V18.prowler;
+    this.pos.copy(pos);
+    this.hp = this.maxHp = E.hp * (hpMult || 1);
+    this.radius = E.radius;
+    this.size = E.size;
+    this.scoreVal = E.score;
+    this.dropChance = E.dropChance;
+    this.waveEnemy = true;
+    this.spdMult = spdMult || 1;
+    this.leadSkill = leadSkill || 0.7;
+    this.state = 'in';
+    this.stateT = 0;
+    this.latDir = Math.random() < 0.5 ? 1 : -1;
+    this.fireT = U.rand(1.5, 3);
+    this.dropT = U.rand(0.6, 1.4);
+    this._minesLeft = 2;
+    this._mineRegenT = 3;
+    this._buildMesh();
+  }
+
+  /* angular dart, no wings: pointed forebody, small tail fins, twin small
+     engines, and three mine canisters slung under the belly. */
+  _buildMesh() {
+    const g = new THREE.Group();
+    const model = new THREE.Group();
+    g.add(model);
+    const hull = new THREE.MeshStandardMaterial({
+      color: 0x26242e, metalness: 0.84, roughness: 0.36, envMapIntensity: 1.15,
+      emissive: 0xffa62e, emissiveIntensity: 0.3 });
+    this.flashMats.push({ mat: hull, base: 0.3 });
+    const trim = HULL.recess(0x14131a);
+    const glowMat = shared(new THREE.MeshBasicMaterial({ color: new THREE.Color(2.6, 1.5, 0.4) }));
+    const hullGeo = ShipGeo.get('pwl.hull', () => mergeGeos([
+      HULL.box(0.95, 0.7, 2.6, [0, 0, 0.4]),
+      HULL.cone(0.46, 1.6, 6, [0, 0, -1.6], [-Math.PI / 2, 0, 0], [1, 0.8, 1]),
+      HULL.box(1.7, 0.2, 0.9, [0, -0.05, 1.3]),                    // small tail planes
+      HULL.box(0.26, 0.7, 0.6, [0, 0.5, 1.4]),                     // dorsal spine
+      /* ventral mine bay: three canisters */
+      HULL.cyl(0.17, 0.17, 0.8, 6, [0, -0.52, 0.7], [Math.PI / 2, 0, 0]),
+      HULL.cyl(0.17, 0.17, 0.8, 6, [0.34, -0.52, 0.7], [Math.PI / 2, 0, 0]),
+      HULL.cyl(0.17, 0.17, 0.8, 6, [-0.34, -0.52, 0.7], [Math.PI / 2, 0, 0]),
+    ]));
+    model.add(new THREE.Mesh(hullGeo, hull));
+    const trimGeo = ShipGeo.get('pwl.trim', () => mergeGeos([
+      HULL.sph(0.28, 7, [0, 0.32, -0.9], [0.7, 0.5, 1.3]),         // cockpit
+      HULL.box(0.5, 0.14, 0.9, [0, -0.34, -0.6]),                  // chin stub
+    ]));
+    model.add(new THREE.Mesh(trimGeo, trim));
+    const engGeo = ShipGeo.get('pwl.eng', () => new THREE.CircleGeometry(0.22, 8));
+    this.engMeshes = [];
+    for (const s of [-1, 1]) {
+      const e = new THREE.Mesh(engGeo, glowMat);
+      e.position.set(s * 0.34, 0, 1.72);
+      model.add(e); this.engMeshes.push(e);
+    }
+    g.position.copy(this.pos);
+    this.mesh = g; this.model = model;
+    this._glowT = U.rand(0, 10);
+    if (this.engMeshes) addEngineRims(this.model || g, this.engMeshes, HULL.recess(), this.type || 'x');
+    dressHull(this);
+    G.scene.add(g);
+  }
+
+  /* light bolt — deflection shot, long-range plinking only */
+  _fire(tgt) {
+    const E = V18.prowler;
+    _v3.set(0, 0, -1).applyQuaternion(this.quat);
+    _v4.copy(this.pos).addScaledVector(_v3, this.radius + 1.4);
+    const dist = _v1.copy(tgt.pos).sub(this.pos).length();
+    const tGo = dist / E.boltSpeed;
+    _v2.copy(tgt.pos).addScaledVector(tgt.vel, tGo * this.leadSkill).sub(_v4).normalize();
+    Projectiles.fire('ebolt', 'enemy', _v4, _v2, { src: this, speed: E.boltSpeed, dmg: E.boltDmg, life: E.boltLife });
+    FX.muzzle(_v4, true);
+    G.audio.shotBlaster(0.3);
+  }
+
+  /* drop one mine out of the ventral bay */
+  _dropMine() {
+    _v3.set(0, -1, 0).applyQuaternion(this.quat);
+    _v4.copy(this.pos).addScaledVector(_v3, this.radius + 0.9);
+    G.enemies.spawnMine(_v4);
+    FX.rings.spawn(_v4, 5, 0xffa62e, 0.3);
+  }
+
+  update(dt) {
+    const E = V18.prowler;
+    this.stateT += dt;
+    this.updateFlash(dt);
+    const tgt = G.player;
+    const dist = _v1.copy(tgt.pos).sub(this.pos).length();
+    const speed = E.speed * this.spdMult;
+
+    // mine ammo trickles back, capped at 2
+    this._mineRegenT -= dt;
+    if (this._mineRegenT <= 0) { this._mineRegenT = 3; if (this._minesLeft < 2) this._minesLeft++; }
+
+    switch (this.state) {
+      case 'in':
+        this.steerToward(tgt.pos, dt, speed, E.accel, 60);
+        this.faceTowards(tgt.pos, E.turn, dt);
+        if (dist < E.fleeRange) { this.state = 'flee'; this.stateT = 0; }
+        else if (dist < E.nearRange) { this.state = 'drop'; this.stateT = 0; }
+        break;
+      case 'drop': {
+        if (dist < E.fleeRange) { this.state = 'flee'; this.stateT = 0; break; }
+        if (dist > E.farRange) {
+          this.steerToward(tgt.pos, dt, speed, E.accel, 60);
+        } else {
+          _v2.copy(this.pos).sub(tgt.pos); _v2.y = 0;
+          if (_v2.lengthSq() < 1e-4) _v2.set(1, 0, 0);
+          _v3.set(-_v2.z, 0, _v2.x).normalize().multiplyScalar(this.latDir * 55).add(this.pos);
+          this.steerToward(_v3, dt, speed * 0.7, E.accel * 0.7, 30);
+        }
+        this.faceTowards(tgt.pos, E.turn, dt);
+        this.dropT -= dt;
+        if (this.dropT <= 0 && this._minesLeft > 0) {
+          this._minesLeft--;
+          this.dropT = U.rand(3.4, 4.6);
+          this._dropMine();
+        }
+        if (this.stateT > 12) { this.state = 'in'; this.stateT = 0; }   // FSM failsafe
+        break;
+      }
+      case 'flee':
+        _v2.copy(this.pos).sub(tgt.pos).normalize().multiplyScalar(E.fleeTo).add(tgt.pos);
+        this.steerToward(_v2, dt, speed * 1.1, E.accel, 50);
+        this.faceTowards(tgt.pos, E.turn * 0.6, dt);
+        if (this.stateT > 2.2 || dist > E.fleeTo * 0.85) {
+          this.latDir *= -1;
+          this.state = 'in'; this.stateT = 0;
+        }
+        break;
+    }
+
+    this.avoidGround(dt, 70);
+    if (this.vel.length() > speed * 1.35) this.vel.setLength(speed * 1.35);
+    this.pos.addScaledVector(this.vel, dt);
+    this.mesh.position.copy(this.pos);
+    this.mesh.quaternion.copy(this.quat);
+
+    this._glowT += dt;
+    const gs = 0.9 + Math.sin(this._glowT * 17) * 0.14;
+    for (const e of this.engMeshes) e.scale.setScalar(gs);
+
+    // long-range plink
+    this.fireT -= dt;
+    if (this.fireT <= 0 && dist > E.fleeRange && dist < E.fleeTo * 1.4 && this.state !== 'flee') {
+      this.fireT = U.rand(1.4, 2.6);
+      this._fire(tgt);
+    }
+    if (Math.random() < 0.55) this.enginePuff([1, 0.6, 0.15]);
+  }
+}
+
+/* ============================================================
+   UPGRADE(content v1.8.1) — STALKER / SAPPER / WARDEN
+   ------------------------------------------------------------
+   Three hostiles that change the SHAPE of a fight, in the same
+   idiom as the v1.8 pair (stats in V18, spawner in the Enemies
+   registry, per-instance materials, shared scratch vectors, the
+   base-class damage/_die/dispose pipeline):
+     STALKER — cloak sniper. Holds a 600-1000 band invisible,
+               breaks cover on a 0.7s red aim-laser, puts one
+               lead-aimed heavy slug into the player, then fades
+               out again for the 1.6s cooldown.
+     SAPPER  — standoff pod-layer. Sits at 500-800 and bolts
+               turret pods onto the field; flees outward when the
+               player closes inside 300.
+     WARDEN  — support hull. Repairs other hostiles through a green
+               beam; destroying it stops the fleet's repairs.
+   ============================================================ */
+
+/* STALKER — cloaked precision sniper. `this.cloaked` is public state
+   (HUD/target logic reads it), so it stays a plain boolean, and the
+   hull is damageable the whole cycle: the cloak is concealment, never
+   invulnerability. Stealth fades its OWN materials (a shared material
+   would dim the rest of the wave). It deliberately skips
+   addEngineRims — that hardware rides the shared recess tier and would
+   hang lit around an invisible ship. */
+class Stalker extends Enemy {
+  constructor(pos, hpMult, spdMult, leadSkill) {
+    super('stalker');
+    const E = V18.stalker;
+    this.pos.copy(pos);
+    this.hp = this.maxHp = E.hp * (hpMult || 1);
+    this.radius = E.radius;
+    this.size = E.size;
+    this.scoreVal = E.score;
+    this.dropChance = E.dropChance;
+    this.waveEnemy = true;
+    this.spdMult = spdMult || 1;
+    this.leadSkill = leadSkill || 0.7;
+    this.state = 'cloak';        // cloak → telegraph → cool → cloak
+    this.stateT = 0;
+    this.jinkSeed = U.rand(0, 100);
+    this.fireT = U.rand(2.5, 4);
+    this.cloaked = true;
+    this._cloak = 1;             // 1 = faded out, 0 = fully lit
+    this._buildMesh();
+  }
+
+  /* slim angular sniper: pointed forebody, a long thin bore, small
+     tail planes. All three lit tiers are per-instance so the whole
+     silhouette can fade together. */
+  _buildMesh() {
+    const g = new THREE.Group();
+    const model = new THREE.Group();
+    g.add(model);
+    const hull = new THREE.MeshStandardMaterial({
+      color: 0x1f2430, metalness: 0.84, roughness: 0.38, envMapIntensity: 1.15,
+      emissive: 0xff3a3a, emissiveIntensity: 0.22, transparent: true, opacity: 1 });
+    this.flashMats.push({ mat: hull, base: 0.22 });
+    const trim = new THREE.MeshStandardMaterial({
+      color: 0x13161d, metalness: 0.86, roughness: 0.42, envMapIntensity: 1.2,
+      transparent: true, opacity: 1 });
+    const glowMat = new THREE.MeshBasicMaterial({
+      color: new THREE.Color(2.4, 0.6, 0.55), transparent: true, opacity: 1 });
+    this._cloakMats = [{ mat: hull, base: 1 }, { mat: trim, base: 1 }, { mat: glowMat, base: 1 }];
+    const hullGeo = ShipGeo.get('stk.hull', () => mergeGeos([
+      HULL.box(0.9, 0.6, 2.4, [0, 0, 0.5]),                        // slim spine
+      HULL.cone(0.5, 1.5, 6, [0, 0, -1.5], [-Math.PI / 2, 0, 0], [1, 0.85, 1]),
+      HULL.cyl(0.16, 0.2, 5.2, 8, [0, 0.1, -3.4], [-Math.PI / 2, 0, 0]),   // long bore
+      HULL.box(1.9, 0.14, 1.1, [0, -0.1, 1.1]),                    // tail planes
+    ]));
+    model.add(new THREE.Mesh(hullGeo, hull));
+    const trimGeo = ShipGeo.get('stk.trim', () => mergeGeos([
+      HULL.sph(0.3, 7, [0, 0.3, -0.5], [0.7, 0.5, 1.4]),           // canopy
+      HULL.box(0.5, 0.16, 1.0, [0, -0.36, -0.4]),                  // chin stub
+    ]));
+    model.add(new THREE.Mesh(trimGeo, trim));
+    const engGeo = ShipGeo.get('stk.eng', () => new THREE.CircleGeometry(0.22, 8));
+    this.engMeshes = [];
+    for (const s of [-1, 1]) {
+      const e = new THREE.Mesh(engGeo, glowMat);
+      e.position.set(s * 0.28, 0, 1.55);
+      model.add(e); this.engMeshes.push(e);
+    }
+    /* aim laser: a 1-unit box along local Z, scaled to the exact shot
+       range while the muzzle is hot (per-instance material, animated) */
+    this.laserMat = new THREE.MeshBasicMaterial({
+      color: new THREE.Color(2.6, 0.15, 0.2), transparent: true, opacity: 0,
+      blending: THREE.AdditiveBlending, depthWrite: false });
+    this.laser = new THREE.Mesh(
+      ShipGeo.get('stk.laser', () => new THREE.BoxGeometry(0.05, 0.05, 1)), this.laserMat);
+    this.laser.visible = false;
+    model.add(this.laser);
+    g.position.copy(this.pos);
+    this.mesh = g; this.model = model;
+    this._glowT = U.rand(0, 10);
+    dressHull(this);
+    G.scene.add(g);
+  }
+
+  /* one lead-aimed heavy slug down the bore */
+  _fire(tgt) {
+    const E = V18.stalker;
+    _v3.set(0, 0, -1).applyQuaternion(this.quat);
+    _v4.copy(this.pos).addScaledVector(_v3, this.radius + 3.4);   // muzzle = bore tip
+    const dist = _v1.copy(tgt.pos).sub(this.pos).length();
+    const tGo = dist / E.boltSpeed;
+    _v2.copy(tgt.pos).addScaledVector(tgt.vel, tGo * this.leadSkill).sub(_v4).normalize();
+    Projectiles.fire('eheavy', 'enemy', _v4, _v2, { src: this, speed: E.boltSpeed, dmg: E.boltDmg, life: E.boltLife });
+    FX.muzzle(_v4, true);
+    G.audio.shotHeavy();
+  }
+
+  update(dt) {
+    const E = V18.stalker;
+    this.stateT += dt;
+    this.updateFlash(dt);
+    const tgt = G.player;
+    const dist = _v1.copy(tgt.pos).sub(this.pos).length();
+    const speed = E.speed * this.spdMult;
+
+    // band-keeping: refuse the brawl, drift sideways inside the ring
+    if (dist < E.nearRange) {
+      _v2.copy(this.pos).sub(tgt.pos).normalize().multiplyScalar(dist + 240).add(tgt.pos);
+      this.steerToward(_v2, dt, speed, E.accel, 60);
+    } else if (dist > E.farRange) {
+      this.steerToward(tgt.pos, dt, speed, E.accel, 60);
+    } else {
+      _v2.copy(this.pos).sub(tgt.pos); _v2.y = 0;
+      if (_v2.lengthSq() < 1e-4) _v2.set(1, 0, 0);
+      _v3.set(-_v2.z, 0, _v2.x).normalize()
+         .multiplyScalar(Math.sin(this.stateT * 0.7 + this.jinkSeed) * 80).add(this.pos);
+      this.steerToward(_v3, dt, speed * 0.7, E.accel * 0.7, 30);
+    }
+    this.faceTowards(tgt.pos, E.turn, dt);
+    this.avoidGround(dt, 70);
+    if (this.vel.length() > speed * 1.3) this.vel.setLength(speed * 1.3);
+    this.pos.addScaledVector(this.vel, dt);
+    this.mesh.position.copy(this.pos);
+    this.mesh.quaternion.copy(this.quat);
+
+    // stalk cycle: hold cover → telegraph → shot → 1.6s exposed
+    switch (this.state) {
+      case 'cloak':
+        this.fireT -= dt;
+        if (this.fireT <= 0 && dist < E.farRange * 1.4) { this.state = 'telegraph'; this.stateT = 0; }
+        break;
+      case 'telegraph': {
+        const p = U.clamp(this.stateT / E.telegraph, 0, 1);
+        this.laser.visible = true;
+        this.laserMat.opacity = 0.12 + p * 0.45;
+        this.laser.scale.z = dist;                          // the beam reaches the player
+        this.laser.position.z = -(dist * 0.5) - this.radius * 0.5;
+        if (this.stateT >= E.telegraph) {
+          this.laser.visible = false;
+          this._fire(tgt);
+          this.state = 'cool'; this.stateT = 0;
+        }
+        break;
+      }
+      case 'cool':
+        if (this.stateT >= E.cool) {
+          this.state = 'cloak'; this.stateT = 0;
+          this.fireT = U.rand(3, 4.6);
+        }
+        break;
+    }
+    this.cloaked = this.state === 'cloak';
+
+    // fade to 12% opacity under cover, snap back fast when it breaks
+    this._cloak = U.clamp(this._cloak + (this.cloaked ? 0.85 : -5) * dt, 0, 1);
+    const op = 0.12 + 0.88 * (1 - this._cloak);
+    for (const cm of this._cloakMats) cm.mat.opacity = cm.base * op;
+
+    this._glowT += dt;
+    const gs = 0.9 + Math.sin(this._glowT * 15) * 0.12;
+    for (const e of this.engMeshes) e.scale.setScalar(gs);
+    if (!this.cloaked && Math.random() < 0.4) this.enginePuff([1, 0.35, 0.3]);
+  }
+}
+
+/* SAPPER — standoff pod-layer. Its damage comes from the field it
+   builds, not from its gun: it bolts a turret pod onto the map every
+   6-8s. Two safeguards hold the 2-pod ceiling — a charge budget
+   (_podsLeft, one back every 9s, cap 2) and a scan of its own live
+   pods — so a pod killed early can be replaced without ever letting
+   a third one exist. */
+class Sapper extends Enemy {
+  constructor(pos, hpMult, spdMult, leadSkill) {
+    super('sapper');
+    const E = V18.sapper;
+    this.pos.copy(pos);
+    this.hp = this.maxHp = E.hp * (hpMult || 1);
+    this.radius = E.radius;
+    this.size = E.size;
+    this.scoreVal = E.score;
+    this.dropChance = E.dropChance;
+    this.waveEnemy = true;
+    this.spdMult = spdMult || 1;
+    this.leadSkill = leadSkill || 0.7;
+    this.stateT = 0;
+    this.jinkSeed = U.rand(0, 100);
+    this.fireT = U.rand(1, 2.2);
+    this.deployT = U.rand(2.5, 4.5);
+    this._podsLeft = 2;
+    this._podRegenT = 9;
+    this._pods = [];             // Turret refs, for the alive-pod cap
+    this._buildMesh();
+  }
+
+  /* boxy military layer: fat hull, two stacks of pod canisters and a
+     dorsal launch rack. Amber accent = ordnance. */
+  _buildMesh() {
+    const g = new THREE.Group();
+    const model = new THREE.Group();
+    g.add(model);
+    const hull = new THREE.MeshStandardMaterial({
+      color: 0x2b2a24, metalness: 0.82, roughness: 0.42, envMapIntensity: 1.15,
+      emissive: 0xffa62e, emissiveIntensity: 0.24 });
+    this.flashMats.push({ mat: hull, base: 0.24 });
+    const trim = HULL.recess(0x181712);
+    const glowMat = shared(new THREE.MeshBasicMaterial({ color: new THREE.Color(2.4, 1.5, 0.45) }));
+    const hullGeo = ShipGeo.get('sap.hull', () => mergeGeos([
+      HULL.box(2.4, 1.5, 4.0, [0, 0, 0.4]),                        // fat deployer hull
+      HULL.cone(1.0, 1.6, 6, [0, 0, -2.1], [-Math.PI / 2, 0, 0], [1, 0.9, 1]),
+      HULL.box(0.8, 0.7, 1.4, [1.7, -0.35, 0.3]),                  // pod stacks
+      HULL.box(0.8, 0.7, 1.4, [-1.7, -0.35, 0.3]),
+      HULL.cyl(0.26, 0.26, 1.0, 7, [0.9, 0.95, 0.6], [Math.PI / 2, 0, 0]),  // launch rails
+      HULL.cyl(0.26, 0.26, 1.0, 7, [-0.9, 0.95, 0.6], [Math.PI / 2, 0, 0]),
+      HULL.box(1.0, 0.9, 0.6, [0, -0.2, 2.2]),                     // stern hatch
+    ]));
+    model.add(new THREE.Mesh(hullGeo, hull));
+    const trimGeo = ShipGeo.get('sap.trim', () => mergeGeos([
+      HULL.sph(0.4, 8, [0, 0.78, -0.7], [0.9, 0.6, 1.3]),          // bridge blister
+      HULL.box(0.5, 0.45, 0.7, [0, 1.35, 0.5]),                    // gantry housing
+    ]));
+    model.add(new THREE.Mesh(trimGeo, trim));
+    const engGeo = ShipGeo.get('sap.eng', () => new THREE.CircleGeometry(0.42, 10));
+    this.engMeshes = [];
+    for (const s of [-1, 1]) {
+      const e = new THREE.Mesh(engGeo, glowMat);
+      e.position.set(s * 1.0, 0, 2.42);
+      model.add(e); this.engMeshes.push(e);
+    }
+    g.position.copy(this.pos);
+    this.mesh = g; this.model = model;
+    this._glowT = U.rand(0, 10);
+    if (this.engMeshes) addEngineRims(this.model || g, this.engMeshes, HULL.recess(), this.type || 'x');
+    dressHull(this);
+    G.scene.add(g);
+  }
+
+  /* weak plink — the pods are the threat, this is only pressure */
+  _fire(tgt) {
+    const E = V18.sapper;
+    _v3.set(0, 0, -1).applyQuaternion(this.quat);
+    _v4.copy(this.pos).addScaledVector(_v3, this.radius + 1.6);
+    const dist = _v1.copy(tgt.pos).sub(this.pos).length();
+    const tGo = dist / E.boltSpeed;
+    _v2.copy(tgt.pos).addScaledVector(tgt.vel, tGo * this.leadSkill).sub(_v4).normalize();
+    Projectiles.fire('ebolt', 'enemy', _v4, _v2, { src: this, speed: E.boltSpeed, dmg: E.boltDmg, life: E.boltLife });
+    FX.muzzle(_v4, true);
+    G.audio.shotBlaster(0.32);
+  }
+
+  /* drop a turret pod on the field under/behind the hull */
+  _deploy() {
+    let live = 0;
+    for (let i = 0; i < this._pods.length; i++) if (this._pods[i].alive) live++;
+    if (live >= 2 || this._podsLeft <= 0) return;
+    _v3.set(0, -0.7, 1).normalize().applyQuaternion(this.quat);
+    _v4.copy(this.pos).addScaledVector(_v3, this.radius + 3.2);
+    const pod = G.enemies.spawnTurret(-1, null, _v4);   // (-1, null, worldPos) = fixed mount
+    pod.active = true;                                  // deployed pods are live, not wave-2 dormant
+    this._podsLeft--;
+    this._pods.push(pod);
+    FX.rings.spawn(_v4, 6, 0xffa62e, 0.35);
+    G.audio.lockBeep(true);
+  }
+
+  update(dt) {
+    const E = V18.sapper;
+    this.stateT += dt;
+    this.updateFlash(dt);
+    const tgt = G.player;
+    const dist = _v1.copy(tgt.pos).sub(this.pos).length();
+    const speed = E.speed * this.spdMult;
+
+    // pod charges trickle back one at a time
+    this._podRegenT -= dt;
+    if (this._podRegenT <= 0) { this._podRegenT = 9; if (this._podsLeft < 2) this._podsLeft++; }
+
+    // range-keeping: flee outward inside 300, then hold the 500-800 band
+    if (dist < E.fleeRange) {
+      _v2.copy(this.pos).sub(tgt.pos).normalize().multiplyScalar(E.fleeTo).add(tgt.pos);
+      this.steerToward(_v2, dt, speed * 1.15, E.accel, 50);
+    } else if (dist < E.nearRange) {
+      _v2.copy(this.pos).sub(tgt.pos).normalize().multiplyScalar(dist + 260).add(tgt.pos);
+      this.steerToward(_v2, dt, speed, E.accel, 60);
+    } else if (dist > E.farRange) {
+      this.steerToward(tgt.pos, dt, speed, E.accel, 60);
+    } else {
+      _v2.copy(this.pos).sub(tgt.pos); _v2.y = 0;
+      if (_v2.lengthSq() < 1e-4) _v2.set(1, 0, 0);
+      _v3.set(-_v2.z, 0, _v2.x).normalize()
+         .multiplyScalar(Math.sin(this.stateT * 0.5 + this.jinkSeed) * 70).add(this.pos);
+      this.steerToward(_v3, dt, speed * 0.65, E.accel * 0.65, 30);
+    }
+    this.faceTowards(tgt.pos, E.turn, dt);
+    this.avoidGround(dt, 70);
+    if (this.vel.length() > speed * 1.3) this.vel.setLength(speed * 1.3);
+    this.pos.addScaledVector(this.vel, dt);
+    this.mesh.position.copy(this.pos);
+    this.mesh.quaternion.copy(this.quat);
+
+    // deployment timer — skipped while it's running from the player
+    this.deployT -= dt;
+    if (this.deployT <= 0) {
+      this.deployT = U.rand(6, 8);
+      if (dist > E.fleeRange) this._deploy();
+    }
+
+    // weak plink
+    this.fireT -= dt;
+    if (this.fireT <= 0 && dist > E.fleeRange && dist < E.farRange * 1.5) {
+      this.fireT = U.rand(1.1, 2);
+      this._fire(tgt);
+    }
+
+    this._glowT += dt;
+    const gs = 0.9 + Math.sin(this._glowT * 13) * 0.12;
+    for (const e of this.engMeshes) e.scale.setScalar(gs);
+    if (Math.random() < 0.5) this.enginePuff([1, 0.7, 0.2]);
+  }
+}
+
+/* WARDEN — support hull. Every 0.5s it retargets the nearest OTHER
+   damaged hostile inside 500u and pours 6 hull/s down a green beam;
+   the beam is visible only while a repair is actually in flight. It
+   hangs back at ~800u and plinks, so the fight is "kill the Warden or
+   watch the wave heal" — and its death says so on the HUD. */
+class Warden extends Enemy {
+  constructor(pos, hpMult, spdMult, leadSkill) {
+    super('warden');
+    const E = V18.warden;
+    this.pos.copy(pos);
+    this.hp = this.maxHp = E.hp * (hpMult || 1);
+    this.radius = E.radius;
+    this.size = E.size;
+    this.scoreVal = E.score;
+    this.dropChance = E.dropChance;
+    this.waveEnemy = true;
+    this.spdMult = spdMult || 1;
+    this.leadSkill = leadSkill || 0.7;
+    this.stateT = 0;
+    this.healT = 0;
+    this.fireT = U.rand(1, 2.4);
+    this._healTarget = null;
+    this._buildMesh();
+  }
+
+  /* broad tender hull: wide spine, outrigger repair arms and a
+     dorsal emitter dish. Green accent = support. */
+  _buildMesh() {
+    const g = new THREE.Group();
+    const model = new THREE.Group();
+    g.add(model);
+    const hull = new THREE.MeshStandardMaterial({
+      color: 0x22322a, metalness: 0.8, roughness: 0.4, envMapIntensity: 1.15,
+      emissive: 0x46ff9a, emissiveIntensity: 0.22 });
+    this.flashMats.push({ mat: hull, base: 0.22 });
+    const trim = HULL.recess(0x131f18);
+    const glowMat = shared(new THREE.MeshBasicMaterial({ color: new THREE.Color(0.5, 2.4, 1.2) }));
+    const hullGeo = ShipGeo.get('wrd.hull', () => mergeGeos([
+      HULL.box(3.4, 1.7, 5.2, [0, 0, 0.6]),                        // wide spine
+      HULL.cone(1.3, 2.0, 6, [0, 0, -3.0], [-Math.PI / 2, 0, 0], [1, 0.9, 1]),
+      HULL.box(1.2, 1.0, 2.4, [2.4, -0.2, 0.4]),                   // repair outriggers
+      HULL.box(1.2, 1.0, 2.4, [-2.4, -0.2, 0.4]),
+      HULL.cyl(0.4, 0.4, 1.6, 8, [0, 1.1, 0.8]),                   // emitter pedestal
+      HULL.cyl(0.75, 0.75, 0.2, 10, [0, 1.95, 0.8]),               // dish
+      HULL.box(1.4, 0.8, 1.0, [0, -0.15, 3.2]),                    // stern block
+    ]));
+    model.add(new THREE.Mesh(hullGeo, hull));
+    const trimGeo = ShipGeo.get('wrd.trim', () => mergeGeos([
+      HULL.sph(0.5, 8, [0, 0.85, -1.4], [0.9, 0.6, 1.3]),          // canopy
+      HULL.box(0.5, 0.5, 1.2, [2.4, 0.7, 0.4]),                    // arm housings
+      HULL.box(0.5, 0.5, 1.2, [-2.4, 0.7, 0.4]),
+    ]));
+    model.add(new THREE.Mesh(trimGeo, trim));
+    const engGeo = ShipGeo.get('wrd.eng', () => new THREE.CircleGeometry(0.5, 10));
+    this.engMeshes = [];
+    for (const s of [-1, 1]) {
+      const e = new THREE.Mesh(engGeo, glowMat);
+      e.position.set(s * 1.35, 0, 3.05);
+      model.add(e); this.engMeshes.push(e);
+    }
+    /* the repair beam: one cached open tube, rotated so its axis runs
+       local Z (scale.z = length). It is parented to the SCENE, not the
+       ship — the two ends are independent hulls and every frame the
+       mesh is parked at their midpoint and aimed down the join. */
+    this.beamMat = new THREE.MeshBasicMaterial({
+      color: new THREE.Color(0.35, 2.4, 0.7), transparent: true, opacity: 0.26,
+      blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide });
+    this.beam = new THREE.Mesh(
+      ShipGeo.get('wrd.beam', () => {
+        const b = new THREE.CylinderGeometry(0.16, 0.16, 1, 6, 1, true);
+        b.rotateX(Math.PI / 2);
+        return b;
+      }), this.beamMat);
+    this.beam.visible = false;
+    G.scene.add(this.beam);
+    g.position.copy(this.pos);
+    this.mesh = g; this.model = model;
+    this._glowT = U.rand(0, 10);
+    if (this.engMeshes) addEngineRims(this.model || g, this.engMeshes, HULL.recess(), this.type || 'x');
+    dressHull(this);
+    G.scene.add(g);
+  }
+
+  /* weak plink */
+  _fire(tgt) {
+    const E = V18.warden;
+    _v3.set(0, 0, -1).applyQuaternion(this.quat);
+    _v4.copy(this.pos).addScaledVector(_v3, this.radius + 1.6);
+    const dist = _v1.copy(tgt.pos).sub(this.pos).length();
+    const tGo = dist / E.boltSpeed;
+    _v2.copy(tgt.pos).addScaledVector(tgt.vel, tGo * this.leadSkill).sub(_v4).normalize();
+    Projectiles.fire('ebolt', 'enemy', _v4, _v2, { src: this, speed: E.boltSpeed, dmg: E.boltDmg, life: E.boltLife });
+    FX.muzzle(_v4, true);
+    G.audio.shotBlaster(0.3);
+  }
+
+  /* the nearest other hostile that is actually hurt */
+  _pickHealTarget() {
+    const E = V18.warden;
+    let best = null, bestD = E.healRange * E.healRange;
+    for (const e of G.enemies.list) {
+      if (e === this || !e.alive || e.hp >= e.maxHp) continue;
+      const dd = e.pos.distanceToSquared(this.pos);
+      if (dd < bestD) { bestD = dd; best = e; }
+    }
+    this._healTarget = best;
+  }
+
+  /* drive the beam from this hull to the patient: position at the
+     midpoint, aim down the join, scale to the gap */
+  _updateBeam(dt) {
+    if (!this.beam) return;
+    const E = V18.warden;
+    const t = this._healTarget;
+    const ok = !!t && t.alive && t.hp < t.maxHp &&
+      t.pos.distanceToSquared(this.pos) < E.healRange * E.healRange;
+    if (!ok) { this._healTarget = null; this.beam.visible = false; return; }
+    t.hp = Math.min(t.maxHp, t.hp + E.healPerSec * dt);
+    _v3.copy(t.pos).sub(this.pos);
+    const len = _v3.length();
+    if (len < 1e-3) { this.beam.visible = false; return; }
+    _v3.multiplyScalar(1 / len);
+    this.beam.position.copy(this.pos).addScaledVector(_v3, len * 0.5);
+    _m1.lookAt(_ORIGIN, _v3, UP);
+    this.beam.quaternion.setFromRotationMatrix(_m1);
+    this.beam.scale.set(1, 1, len);
+    this.beam.visible = true;
+    this.beamMat.opacity = 0.2 + 0.16 * Math.sin(this.stateT * 12);
+  }
+
+  update(dt) {
+    const E = V18.warden;
+    this.stateT += dt;
+    this.updateFlash(dt);
+    const tgt = G.player;
+    const dist = _v1.copy(tgt.pos).sub(this.pos).length();
+    const speed = E.speed * this.spdMult;
+
+    // hangs back: back off inside the standoff, close beyond it, else strafe
+    if (dist < E.standoff * 0.8) {
+      _v2.copy(this.pos).sub(tgt.pos).normalize().multiplyScalar(dist + 320).add(tgt.pos);
+      this.steerToward(_v2, dt, speed, E.accel, 60);
+    } else if (dist > E.standoff * 1.3) {
+      this.steerToward(tgt.pos, dt, speed, E.accel, 60);
+    } else {
+      _v2.copy(this.pos).sub(tgt.pos); _v2.y = 0;
+      if (_v2.lengthSq() < 1e-4) _v2.set(1, 0, 0);
+      _v3.set(-_v2.z, 0, _v2.x).normalize()
+         .multiplyScalar(Math.sin(this.stateT * 0.45 + 1.7) * 80).add(this.pos);
+      this.steerToward(_v3, dt, speed * 0.6, E.accel * 0.6, 30);
+    }
+    this.faceTowards(tgt.pos, E.turn, dt);
+    this.avoidGround(dt, 70);
+    if (this.vel.length() > speed * 1.25) this.vel.setLength(speed * 1.25);
+    this.pos.addScaledVector(this.vel, dt);
+    this.mesh.position.copy(this.pos);
+    this.mesh.quaternion.copy(this.quat);
+
+    // repair cycle: retarget twice a second, run the beam every frame
+    this.healT -= dt;
+    if (this.healT <= 0) { this.healT = 0.5; this._pickHealTarget(); }
+    this._updateBeam(dt);
+
+    this.fireT -= dt;
+    if (this.fireT <= 0) {
+      this.fireT = U.rand(1.1, 2.2);
+      if (dist > 200) this._fire(tgt);
+    }
+
+    this._glowT += dt;
+    const gs = 0.9 + Math.sin(this._glowT * 12) * 0.12;
+    for (const e of this.engMeshes) e.scale.setScalar(gs);
+    if (Math.random() < 0.5) this.enginePuff([0.5, 1, 0.7]);
+  }
+
+  /* the fleet's only repair source: losing it is a HUD event */
+  _die() {
+    if (this.beam) this.beam.visible = false;
+    G.hud.alert('WARDEN DOWN — ENEMY REPAIRS STOPPED', 2);
+    super._die();
+  }
+
+  dispose() {
+    if (this.beam) { G.scene.remove(this.beam); this.beam = null; }
+    if (this.beamMat && this.beamMat.dispose) this.beamMat.dispose();
+    super.dispose();
+  }
+}
+
+/* UPGRADE(content v1.8) — WASP WING: four fast interceptor drones.
+   Same group/per-drone shape as HornetWing, but lighter and quicker,
+   leaning toward the nearest hostile and punching 3-round volleys
+   instead of single pecks. Blue-green accent = friendly. */
+class WaspWing {
+  constructor(pos, count) {
+    this.count = count || 4;
+    this.drones = [];
+    this.pos = pos.clone();
+    this._cen = new THREE.Vector3();
+    this.hp = this.maxHp = this.count * 50;
+    for (let i = 0; i < this.count; i++) this.drones.push(this._make(pos, i));
+    this.alive = true;
+  }
+
+  _make(pos, i) {
+    const a = (i / this.count) * U.TAU;
+    const d = {
+      pos: pos.clone().add(new THREE.Vector3(Math.cos(a) * 16, 4, Math.sin(a) * 16)),
+      vel: new THREE.Vector3(),
+      aim: new THREE.Vector3(),
+      hp: 50, maxHp: 50,
+      alive: true,
+      orbitA: a,
+      fireT: U.rand(0.4, 1.2),
+      burstN: 0, burstT: 0,
+      mesh: null,
+    };
+    const g = new THREE.Group();
+    /* wasp silhouette: twin tapered bodies with a thin stinger nose */
+    const hull = new THREE.MeshStandardMaterial({
+      color: 0x213a2c, metalness: 0.8, roughness: 0.34,
+      emissive: 0x46ff9a, emissiveIntensity: 0.5 });
+    const bodyGeo = ShipGeo.get('wsp.body', () => mergeGeos([
+      HULL.cone(0.2, 0.85, 6, [0.17, 0, -0.25], [-Math.PI / 2, 0, 0]),
+      HULL.cone(0.2, 0.85, 6, [-0.17, 0, -0.25], [-Math.PI / 2, 0, 0]),
+      HULL.cyl(0.14, 0.22, 0.95, 6, [0.17, 0, 0.55], [-Math.PI / 2, 0, 0]),
+      HULL.cyl(0.14, 0.22, 0.95, 6, [-0.17, 0, 0.55], [-Math.PI / 2, 0, 0]),
+      HULL.cyl(0.03, 0.05, 1.5, 5, [0, 0, -1.35], [-Math.PI / 2, 0, 0]),   // stinger
+      HULL.box(1.05, 0.05, 0.4, [0, 0.05, 0.35]),                          // wing stubs
+    ]));
+    g.add(new THREE.Mesh(bodyGeo, hull));
+    const glowMat = shared(new THREE.MeshBasicMaterial({ color: new THREE.Color(0.5, 2.4, 1.3) }));
+    const engGeo = ShipGeo.get('wsp.eng', () => new THREE.CircleGeometry(0.11, 7));
+    for (const s of [-1, 1]) {
+      const e = new THREE.Mesh(engGeo, glowMat);
+      e.position.set(s * 0.17, 0, 1.06);
+      g.add(e);
+    }
+    d.mesh = g;
+    if (this.engMeshes) addEngineRims(this.model || g, this.engMeshes, HULL.recess(), this.type || 'x');
+    dressHull(this);
+    G.scene.add(g);
+    return d;
+  }
+
+  update(dt) {
+    if (!this.alive) return;
+    const p = G.player;
+    let anyAlive = false, n = 0, hpSum = 0, hpMax = 0;
+    this._cen.set(0, 0, 0);
+    for (const d of this.drones) {
+      if (!d.alive) continue;
+      anyAlive = true; n++;
+      hpSum += d.hp; hpMax += d.maxHp;
+      // nearest hostile in reach — wasps pick their own fights
+      let best = null, bestD = 700 * 700;
+      for (const e of G.enemies.list) {
+        if (!e.alive) continue;
+        const dd = e.pos.distanceToSquared(d.pos);
+        if (dd < bestD) { bestD = dd; best = e; }
+      }
+      // tight fast orbit around the player, wider when engaging
+      d.orbitA += 2.2 * dt;
+      const r = best ? 22 : 14;
+      _v1.set(Math.cos(d.orbitA) * r, 5 + Math.sin(d.orbitA * 1.6) * 3, Math.sin(d.orbitA) * r)
+         .applyQuaternion(p.quat).add(p.pos);
+      _v2.copy(_v1).sub(d.pos);
+      _v2.multiplyScalar(4.2);                       // stiffer spring than hornets
+      _v2.sub(d.vel);
+      if (_v2.length() > 95) _v2.setLength(95);
+      d.vel.addScaledVector(_v2, dt);
+      d.pos.addScaledVector(d.vel, dt);
+      d.mesh.position.copy(d.pos);
+      // face the target (or the flight vector when idle)
+      if (best) d.aim.copy(best.pos).sub(d.pos);
+      else d.aim.copy(d.vel);
+      if (d.aim.lengthSq() > 1e-6) {
+        _m1.lookAt(_ORIGIN, d.aim, UP);
+        d.mesh.quaternion.setFromRotationMatrix(_m1);
+      }
+      // 3-round volley
+      if (!best) d.burstN = 0;
+      d.fireT -= dt;
+      if (d.fireT <= 0 && best) { d.fireT = U.rand(1.1, 1.7); d.burstN = 3; }
+      if (d.burstN > 0) {
+        d.burstT -= dt;
+        if (d.burstT <= 0 && best) {
+          d.burstT = 0.09;
+          d.burstN--;
+          _v2.copy(best.pos).sub(d.pos).normalize();
+          Projectiles.fire('bolt', 'player', d.pos, _v2, { speed: 780, dmg: 4, life: 1.3, noStats: true });
+          G.audio.shotBlaster(0.18);
+        }
+      }
+      this._cen.add(d.pos);
+    }
+    this.hp = hpSum; this.maxHp = hpMax || 1;
+    if (n) this.pos.copy(this._cen.multiplyScalar(1 / n));
+    this.alive = anyAlive;
+  }
+
+  dispose() {
+    for (const d of this.drones) if (d.mesh) G.scene.remove(d.mesh);
+    this.drones.length = 0;
+    this.alive = false;
+  }
+}
+
+/* UPGRADE(content v1.8) — SALVAGE TUG: unarmed repair craft.
+   Holds a perch behind/above the player on a soft spring, faces them,
+   and runs a green beam down its nose that patches +3 hull/s inside
+   200u. Its only offence is a weak 1/s plink at whatever is nearest. */
+class SalvageTug {
+  constructor(pos) {
+    this.pos = pos.clone();
+    this.vel = new THREE.Vector3();
+    this.quat = new THREE.Quaternion();
+    this._aim = new THREE.Vector3();
+    this.hp = this.maxHp = 140;
+    this.radius = 4;
+    this.alive = true;
+    this.flash = 0;
+    this.fireT = U.rand(0.5, 1.5);
+    this._buildMesh();
+  }
+
+  /* boxy utility tug: work pods on outriggers, a grapple claw, and a
+     dorsal emitter housing. Green accent = friendly support. */
+  _buildMesh() {
+    const g = new THREE.Group();
+    const model = new THREE.Group();
+    g.add(model);
+    const hull = new THREE.MeshStandardMaterial({
+      color: 0x233a30, metalness: 0.76, roughness: 0.44,
+      emissive: 0x39ff88, emissiveIntensity: 0.2 });
+    this.hullMat = hull;
+    const trim = HULL.recess(0x14231b);
+    const glowMat = shared(new THREE.MeshBasicMaterial({ color: new THREE.Color(0.45, 2.4, 1.2) }));
+    const hullGeo = ShipGeo.get('tug.hull', () => mergeGeos([
+      HULL.box(1.9, 1.3, 3.6, [0, 0, 0.4]),
+      HULL.cone(0.9, 1.6, 6, [0, 0, -2.0], [-Math.PI / 2, 0, 0], [1, 0.9, 1]),
+      HULL.box(1.1, 1.0, 1.8, [1.6, 0.1, 0.5]),                    // work pods
+      HULL.box(1.1, 1.0, 1.8, [-1.6, 0.1, 0.5]),
+      HULL.box(2.4, 0.3, 0.6, [0, 0.4, 0.2]),                      // cross brace
+      HULL.cyl(0.14, 0.14, 1.4, 6, [0, -0.9, -1.2]),               // grapple arm
+      HULL.cyl(0.32, 0.12, 0.6, 6, [0, -1.7, -1.2]),               // claw
+    ]));
+    model.add(new THREE.Mesh(hullGeo, hull));
+    const trimGeo = ShipGeo.get('tug.trim', () => mergeGeos([
+      HULL.sph(0.34, 8, [0, 0.75, -0.6], [0.8, 0.6, 1.4]),         // canopy
+      HULL.cyl(0.3, 0.42, 0.7, 8, [0, 0.95, 0.9]),                 // emitter housing
+      HULL.cyl(0.55, 0.55, 0.16, 10, [0, 1.35, 0.9]),              // emitter dish
+    ]));
+    model.add(new THREE.Mesh(trimGeo, trim));
+    const engGeo = ShipGeo.get('tug.eng', () => new THREE.CircleGeometry(0.34, 10));
+    this.engMeshes = [];
+    for (const s of [-1, 1]) {
+      const e = new THREE.Mesh(engGeo, glowMat);
+      e.position.set(s * 1.6, 0.1, 1.5);
+      model.add(e); this.engMeshes.push(e);
+    }
+    /* the repair beam: a thin additive tube down the nose (a cylinder's
+       axis runs local Y, so a quarter-turn about X lines it up with Z) */
+    this.beamMat = new THREE.MeshBasicMaterial({
+      color: new THREE.Color(0.4, 2.4, 1.2), transparent: true, opacity: 0.25,
+      blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide });
+    this.beam = new THREE.Mesh(
+      ShipGeo.get('tug.beam', () => new THREE.CylinderGeometry(0.16, 0.16, 170, 7, 1, true)), this.beamMat);
+    this.beam.rotation.x = Math.PI / 2;
+    this.beam.position.set(0, 0, -86);
+    this.beam.visible = false;
+    model.add(this.beam);
+    g.position.copy(this.pos);
+    this.mesh = g; this.model = model;
+    this._glowT = U.rand(0, 10);
+    if (this.engMeshes) addEngineRims(this.model || g, this.engMeshes, HULL.recess(), this.type || 'x');
+    dressHull(this);
+    G.scene.add(g);
+  }
+
+  update(dt) {
+    if (!this.alive) { this.mesh.visible = false; return; }
+    const p = G.player;
+    this._glowT += dt;
+    this.flash = Math.max(0, this.flash - 4 * dt);
+    if (this.hullMat) this.hullMat.emissiveIntensity = 0.2 + this.flash * 2.5;
+
+    // soft spring onto a perch behind/above the player (100-160 u)
+    _v1.set(0.7, 0.55, 1).normalize().multiplyScalar(130).applyQuaternion(p.quat).add(p.pos);
+    _v2.copy(_v1).sub(this.pos);
+    const d = _v2.length();
+    if (d > 1) {
+      _v2.multiplyScalar(Math.min(d, 80) / d * 1.9);
+      _v2.sub(this.vel);
+      if (_v2.length() > 26) _v2.setLength(26);
+      this.vel.addScaledVector(_v2, dt);
+    }
+    this.vel.multiplyScalar(Math.exp(-1.3 * dt));
+    this.pos.addScaledVector(this.vel, dt);
+    this.mesh.position.copy(this.pos);
+
+    // face the player — the beam runs down the nose
+    this._aim.copy(p.pos).sub(this.pos);
+    if (this._aim.lengthSq() > 1e-6) {
+      _m1.lookAt(_ORIGIN, this._aim, UP);
+      this.quat.setFromRotationMatrix(_m1);
+    }
+    this.mesh.quaternion.copy(this.quat);
+
+    // repair beam + hull trickle when the player is in reach
+    const inReach = p.alive && p.pos.distanceToSquared(this.pos) < 200 * 200;
+    this.beam.visible = inReach;
+    if (inReach) {
+      this.beamMat.opacity = 0.16 + 0.14 * Math.sin(this._glowT * 9);
+      p.hull = Math.min(p.maxHull || CFG.combat.hull, p.hull + 3 * dt);
+    }
+
+    // engine flicker
+    const gs = 0.9 + Math.sin(this._glowT * 14) * 0.12;
+    for (const e of this.engMeshes) e.scale.setScalar(gs);
+
+    // weak plink at the nearest hostile, roughly once a second
+    this.fireT -= dt;
+    if (this.fireT <= 0) {
+      let best = null, bestD = 620 * 620;
+      for (const e of G.enemies.list) {
+        if (!e.alive) continue;
+        const dd = e.pos.distanceToSquared(this.pos);
+        if (dd < bestD) { bestD = dd; best = e; }
+      }
+      if (best) {
+        this.fireT = 1.0;
+        _v3.set(0, 0, -1).applyQuaternion(this.quat);
+        _v4.copy(this.pos).addScaledVector(_v3, this.radius + 1.4);
+        _v2.copy(best.pos).sub(_v4).normalize();
+        Projectiles.fire('bolt', 'player', _v4, _v2, { speed: 620, dmg: 4, life: 1.4, noStats: true });
+        G.audio.shotBlaster(0.22);
+      } else {
+        this.fireT = 0.3;
+      }
+    }
+  }
+
+  damage(dmg) {
+    if (!this.alive || dmg <= 0) return;
+    this.hp -= dmg;
+    this.flash = 1;
+    if (this.hp <= 0) {
+      this.alive = false;
+      FX.explosion(this.pos, 7);
+      G.audio.explosion(0.7);
+      G.hud.alert('SALVAGE TUG LOST', 2.5);
+      this.dispose();
+    }
+  }
+
+  dispose() {
+    if (this.mesh) { G.scene.remove(this.mesh); this.mesh = null; }
+    this.alive = false;
+  }
+}
+
+/* ============================================================
+   UPGRADE(content v1.8.1) — SPOTTER / SWEEPER
+   ------------------------------------------------------------
+   Two small friendly utility craft with the same contract as
+   WaspWing / SalvageTug: the game only ever calls update(dt) and
+   dispose(), and damage is whatever the instance chooses to model.
+     SPOTTER — orbits at ~140u and paints the nearest hostile for
+               the wing (e.designated, an amber marker over the
+               hull), plinking in 3-round bursts while it works.
+     SWEEPER — hunts mines down, closes to contact range and cracks
+               them, claiming the blast so it can't hurt the player
+               it just cleared the lane for.
+   ============================================================ */
+
+/* SPOTTER — target designator. Grepped the codebase first: there is
+   no cross-file marking API (no Enemies.markTarget, no Enemy.designated
+   producer), so the whole designation lives inside this class — the
+   target carries `e.designated` in seconds, this instance owns the
+   marker mesh over its hull and does the decay itself. */
+class Spotter {
+  constructor(pos) {
+    this.pos = pos.clone();
+    this.vel = new THREE.Vector3();
+    this.quat = new THREE.Quaternion();
+    this._aim = new THREE.Vector3();
+    this.hp = this.maxHp = 90;
+    this.radius = 3;
+    this.alive = true;
+    this.orbitA = U.rand(0, U.TAU);
+    this.markT = U.rand(0.4, 1.2);
+    this.fireT = U.rand(0.6, 1.4);
+    this.burstN = 0;
+    this.burstT = 0;
+    this._marked = null;
+    this._buildMesh();
+  }
+
+  /* spindly sensor craft: narrow hull, wide sensor vanes and a dish
+     mast. Amber accent = the designator. */
+  _buildMesh() {
+    const g = new THREE.Group();
+    const model = new THREE.Group();
+    g.add(model);
+    const hull = new THREE.MeshStandardMaterial({
+      color: 0x2a3326, metalness: 0.78, roughness: 0.4,
+      emissive: 0xffc25a, emissiveIntensity: 0.3 });
+    const trim = HULL.recess(0x1a1d14);
+    const glowMat = shared(new THREE.MeshBasicMaterial({ color: new THREE.Color(2.4, 1.8, 0.5) }));
+    const hullGeo = ShipGeo.get('spt.hull', () => mergeGeos([
+      HULL.box(0.7, 0.5, 1.9, [0, 0, 0.2]),
+      HULL.cone(0.34, 1.1, 6, [0, 0, -1.15], [-Math.PI / 2, 0, 0], [1, 0.85, 1]),
+      HULL.box(1.5, 0.1, 0.7, [0, 0.15, 0.5]),                     // sensor vanes
+      HULL.box(0.3, 0.4, 0.5, [0, 0.35, -0.1]),                    // mast base
+    ]));
+    model.add(new THREE.Mesh(hullGeo, hull));
+    const trimGeo = ShipGeo.get('spt.trim', () => mergeGeos([
+      HULL.sph(0.24, 7, [0, 0.22, -0.3], [0.8, 0.5, 1.3]),         // canopy
+      HULL.cyl(0.08, 0.08, 1.0, 5, [0, 0.75, -0.1]),               // sensor mast
+      HULL.cyl(0.3, 0.3, 0.08, 8, [0, 1.3, -0.1], [Math.PI / 3, 0, 0]),   // dish
+    ]));
+    model.add(new THREE.Mesh(trimGeo, trim));
+    const engGeo = ShipGeo.get('spt.eng', () => new THREE.CircleGeometry(0.16, 8));
+    this.engMeshes = [];
+    for (const s of [-1, 1]) {
+      const e = new THREE.Mesh(engGeo, glowMat);
+      e.position.set(s * 0.22, 0, 1.2);
+      model.add(e); this.engMeshes.push(e);
+    }
+    /* the designation marker: a small additive amber bipyramid parked
+       over whatever this spotter painted. World space, own material. */
+    this.markMat = new THREE.MeshBasicMaterial({
+      color: new THREE.Color(2.6, 1.7, 0.3), transparent: true, opacity: 0.8,
+      blending: THREE.AdditiveBlending, depthWrite: false });
+    this.mark = new THREE.Mesh(
+      ShipGeo.get('spt.mark', () => new THREE.OctahedronGeometry(0.9, 0)), this.markMat);
+    this.mark.visible = false;
+    G.scene.add(this.mark);
+    g.position.copy(this.pos);
+    this.mesh = g; this.model = model;
+    this._glowT = U.rand(0, 10);
+    if (this.engMeshes) addEngineRims(this.model || g, this.engMeshes, HULL.recess(), this.type || 'x');
+    dressHull(this);
+    G.scene.add(g);
+  }
+
+  _nearestEnemy(maxD) {
+    let best = null, bestD = maxD * maxD;
+    for (const e of G.enemies.list) {
+      if (!e.alive) continue;
+      const dd = e.pos.distanceToSquared(this.pos);
+      if (dd < bestD) { bestD = dd; best = e; }
+    }
+    return best;
+  }
+
+  update(dt) {
+    if (!this.alive) { this.mesh.visible = false; this.mark.visible = false; return; }
+    const p = G.player;
+    this._glowT += dt;
+
+    // orbit ~140u over the player's shoulder
+    this.orbitA += 0.7 * dt;
+    _v1.set(Math.cos(this.orbitA) * 140, 35 + Math.sin(this.orbitA * 0.8) * 18, Math.sin(this.orbitA) * 140)
+       .applyQuaternion(p.quat).add(p.pos);
+    _v2.copy(_v1).sub(this.pos);
+    _v2.multiplyScalar(2.4);
+    _v2.sub(this.vel);
+    if (_v2.length() > 85) _v2.setLength(85);
+    this.vel.addScaledVector(_v2, dt);
+    this.vel.multiplyScalar(Math.exp(-0.8 * dt));
+    this.pos.addScaledVector(this.vel, dt);
+    this.mesh.position.copy(this.pos);
+
+    // designation: re-pick the nearest hostile in reach every 1.5s
+    const near = this._nearestEnemy(900);
+    this.markT -= dt;
+    if (this.markT <= 0) {
+      this.markT = 1.5;
+      if (this._marked && this._marked !== near) this._marked.designated = 0;
+      this._marked = near;
+      if (near) near.designated = 2.0;      // seconds of paint; this class owns the decay
+    }
+    // own the decay + hang the marker over the painted hull
+    const m = this._marked;
+    if (m && m.alive && m.designated > 0) {
+      m.designated = Math.max(0, m.designated - dt);
+      this.mark.visible = true;
+      this.mark.position.copy(m.pos);
+      this.mark.position.y += m.radius * 1.4 + 5;
+      this.mark.rotation.y += 2.4 * dt;
+      this.markMat.opacity = 0.5 + 0.3 * Math.sin(this._glowT * 9);
+    } else {
+      this.mark.visible = false;
+    }
+
+    // face the painted target, or the player when the scope is empty
+    this._aim.copy(m && m.alive ? m.pos : p.pos).sub(this.pos);
+    if (this._aim.lengthSq() > 1e-6) {
+      _m1.lookAt(_ORIGIN, this._aim, UP);
+      this.quat.setFromRotationMatrix(_m1);
+    }
+    this.mesh.quaternion.copy(this.quat);
+
+    // weak 3-round burst at whatever it can see
+    const tgt = this._nearestEnemy(700);
+    if (!tgt) this.burstN = 0;
+    this.fireT -= dt;
+    if (this.fireT <= 0 && tgt) { this.fireT = U.rand(1.6, 2.4); this.burstN = 3; }
+    if (this.burstN > 0) {
+      this.burstT -= dt;
+      if (this.burstT <= 0 && tgt) {
+        this.burstT = 0.12;
+        this.burstN--;
+        _v3.set(0, 0, -1).applyQuaternion(this.quat);
+        _v4.copy(this.pos).addScaledVector(_v3, this.radius + 1.2);
+        _v2.copy(tgt.pos).sub(_v4).normalize();
+        Projectiles.fire('bolt', 'player', _v4, _v2, { speed: 820, dmg: 3, life: 1.3, noStats: true });
+        G.audio.shotBlaster(0.16);
+      }
+    }
+
+    const gs = 0.9 + Math.sin(this._glowT * 15) * 0.12;
+    for (const e of this.engMeshes) e.scale.setScalar(gs);
+  }
+
+  dispose() {
+    if (this._marked) { this._marked.designated = 0; this._marked = null; }
+    if (this.mark) { G.scene.remove(this.mark); this.mark = null; }
+    if (this.markMat && this.markMat.dispose) this.markMat.dispose();
+    if (this.mesh) { G.scene.remove(this.mesh); this.mesh = null; }
+    this.alive = false;
+  }
+}
+
+/* SWEEPER — mine hunter. Flies the enemy list for live mines first
+   (700u sweep), chases the nearest one down and cracks it inside 40u
+   by calling its damage() directly — flagged as a PLAYER kill so the
+   detonation can't clip the player the lane was cleared for. With no
+   mine in reach it plinks the nearest hostile, and with no target at
+   all it holds station off the player's shoulder. */
+class Sweeper {
+  constructor(pos) {
+    this.pos = pos.clone();
+    this.vel = new THREE.Vector3();
+    this.quat = new THREE.Quaternion();
+    this._aim = new THREE.Vector3();
+    this.hp = this.maxHp = 110;
+    this.radius = 3.5;
+    this.alive = true;
+    this.fireT = U.rand(0.4, 1.2);
+    this.homeA = U.rand(0, U.TAU);
+    this._buildMesh();
+  }
+
+  /* stubby utility drone: fat hull, a mine-cracker jaw on the nose and
+     two sweeper booms. Blue-green accent = friendly. */
+  _buildMesh() {
+    const g = new THREE.Group();
+    const model = new THREE.Group();
+    g.add(model);
+    const hull = new THREE.MeshStandardMaterial({
+      color: 0x243530, metalness: 0.78, roughness: 0.44,
+      emissive: 0x46d0c0, emissiveIntensity: 0.26 });
+    const trim = HULL.recess(0x152120);
+    const glowMat = shared(new THREE.MeshBasicMaterial({ color: new THREE.Color(0.5, 2.2, 2.0) }));
+    const hullGeo = ShipGeo.get('swp.hull', () => mergeGeos([
+      HULL.box(1.5, 1.1, 2.8, [0, 0, 0.3]),
+      HULL.box(0.6, 0.6, 0.9, [0, -0.1, -1.7]),                    // cracker jaw
+      HULL.box(1.9, 0.16, 0.5, [0, 0.55, -0.2]),                   // sweeper booms
+      HULL.box(0.35, 0.5, 0.5, [0.85, 0.35, 0.9]),
+      HULL.box(0.35, 0.5, 0.5, [-0.85, 0.35, 0.9]),
+    ]));
+    model.add(new THREE.Mesh(hullGeo, hull));
+    const trimGeo = ShipGeo.get('swp.trim', () => mergeGeos([
+      HULL.sph(0.32, 8, [0, 0.6, -0.5], [0.8, 0.6, 1.3]),          // canopy
+      HULL.cyl(0.12, 0.12, 0.6, 6, [0, -0.5, -1.7], [Math.PI / 2, 0, 0]),  // jaw pin
+    ]));
+    model.add(new THREE.Mesh(trimGeo, trim));
+    const engGeo = ShipGeo.get('swp.eng', () => new THREE.CircleGeometry(0.3, 9));
+    this.engMeshes = [];
+    for (const s of [-1, 1]) {
+      const e = new THREE.Mesh(engGeo, glowMat);
+      e.position.set(s * 0.55, 0, 1.75);
+      model.add(e); this.engMeshes.push(e);
+    }
+    g.position.copy(this.pos);
+    this.mesh = g; this.model = model;
+    this._glowT = U.rand(0, 10);
+    if (this.engMeshes) addEngineRims(this.model || g, this.engMeshes, HULL.recess(), this.type || 'x');
+    dressHull(this);
+    G.scene.add(g);
+  }
+
+  update(dt) {
+    if (!this.alive) { this.mesh.visible = false; return; }
+    const p = G.player;
+    this._glowT += dt;
+
+    // mines first: closest live one inside the sweep radius
+    let mine = null, mD = 700 * 700;
+    let foe = null, fD = 800 * 800;
+    for (const e of G.enemies.list) {
+      if (!e.alive) continue;
+      const dd = e.pos.distanceToSquared(this.pos);
+      if (e.type === 'mine') { if (dd < mD) { mD = dd; mine = e; } }
+      else if (dd < fD) { fD = dd; foe = e; }
+    }
+    const tgt = mine || foe;
+
+    if (tgt) {
+      // hold ~18u off a mine's flank, ~90u off a warship
+      _v1.copy(this.pos).sub(tgt.pos);
+      const d = Math.max(_v1.length(), 1e-3);
+      const hold = tgt.type === 'mine' ? 18 : 90;
+      _v2.copy(tgt.pos).addScaledVector(_v1, hold / d);
+      _v2.sub(this.pos).multiplyScalar(2.2);
+      _v2.sub(this.vel);
+      if (_v2.length() > 90) _v2.setLength(90);
+      this.vel.addScaledVector(_v2, dt);
+    } else {
+      // nothing to hunt: hold station off the player's shoulder
+      this.homeA += 0.6 * dt;
+      _v1.set(Math.cos(this.homeA) * 170, 40 + Math.sin(this.homeA * 0.7) * 16, Math.sin(this.homeA) * 170)
+         .applyQuaternion(p.quat).add(p.pos);
+      _v2.copy(_v1).sub(this.pos).multiplyScalar(2.2);
+      _v2.sub(this.vel);
+      if (_v2.length() > 80) _v2.setLength(80);
+      this.vel.addScaledVector(_v2, dt);
+    }
+    this.vel.multiplyScalar(Math.exp(-1.0 * dt));
+    this.pos.addScaledVector(this.vel, dt);
+    this.mesh.position.copy(this.pos);
+
+    this._aim.copy(tgt ? tgt.pos : p.pos).sub(this.pos);
+    if (this._aim.lengthSq() > 1e-6) {
+      _m1.lookAt(_ORIGIN, this._aim, UP);
+      this.quat.setFromRotationMatrix(_m1);
+    }
+    this.mesh.quaternion.copy(this.quat);
+
+    // contact crack: inside 40u of a mine, pop it (as a player kill, so
+    // the blast the sweeper is standing in doesn't clip the player)
+    if (mine && mine.pos.distanceToSquared(this.pos) < 40 * 40) {
+      FX.rings.spawn(mine.pos, 6, 0xffd25a, 0.3);
+      if (mine.damage(mine.hp, null, null, true)) G.hud.alert('SWEEPER: MINE CLEARED', 1.5);
+    } else if (tgt) {
+      this.fireT -= dt;
+      if (this.fireT <= 0) {
+        this.fireT = 0.8;
+        _v3.set(0, 0, -1).applyQuaternion(this.quat);
+        _v4.copy(this.pos).addScaledVector(_v3, this.radius + 1.2);
+        _v2.copy(tgt.pos).sub(_v4).normalize();
+        Projectiles.fire('bolt', 'player', _v4, _v2, { speed: 760, dmg: 5, life: 1.3, noStats: true });
+        G.audio.shotBlaster(0.2);
+      }
+    }
+
+    const gs = 0.9 + Math.sin(this._glowT * 14) * 0.12;
+    for (const e of this.engMeshes) e.scale.setScalar(gs);
+  }
+
+  dispose() {
+    if (this.mesh) { G.scene.remove(this.mesh); this.mesh = null; }
+    this.alive = false;
+  }
 }

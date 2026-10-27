@@ -1,0 +1,61 @@
+name: Deploy to Cloudflare Pages
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  deployments: write
+
+concurrency:
+  group: cloudflare-pages-production
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    name: Test and deploy
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          package-manager-cache: false
+
+      - name: Verify game behavior
+        run: node verify_behaviour.js
+
+      - name: Verify game cheats
+        run: node test_cheats.js
+
+      - name: Stage static site
+        run: |
+          mkdir -p dist/vendor
+          cp index.html data.js engine.js fx.js entities.js game.js dist/
+          cp vendor/*.js dist/vendor/
+
+      - name: Check Cloudflare credentials
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          test -n "$CLOUDFLARE_API_TOKEN" || { echo "::error::Missing CLOUDFLARE_API_TOKEN repository secret"; exit 1; }
+          test -n "$CLOUDFLARE_ACCOUNT_ID" || { echo "::error::Missing CLOUDFLARE_ACCOUNT_ID repository secret"; exit 1; }
+
+      - name: Deploy to Cloudflare Pages
+        uses: cloudflare/wrangler-action@v4
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          preCommands: |
+            projects="$(wrangler pages project list --json)"
+            node -e 'const data=JSON.parse(process.argv[1]); const projects=Array.isArray(data)?data:(data.result||data.projects||[]); process.exit(projects.some(project=>project.name==="space-shooter")?0:1)' "$projects" || wrangler pages project create space-shooter --production-branch main
+          command: pages deploy dist --project-name=space-shooter --branch=main
+          gitHubToken: ${{ secrets.GITHUB_TOKEN }}

@@ -519,6 +519,78 @@ class FireballPool {
      pulse  — the post-processing impact envelope (chromatic aberration
               + radial blur), consumed by the composer pass in game.js
 ------------------------------------------------------------------------- */
+/* ---------------- UPGRADE(graphics v1.8.1): BOOST WARP STREAKS ----------
+   Speed is the one thing a cockpit view cannot show. Past normal cruise a
+   sparse field of additive streaks streams past the camera along the
+   velocity axis, so the eye reads the ship MOVING even though the skybox
+   is static. One instanced draw, camera-relative offsets, no allocations
+   in the frame loop; the whole effect fades in with the speed envelope. */
+const _wv1 = new THREE.Vector3(), _wv2 = new THREE.Vector3(), _wv3 = new THREE.Vector3(), _wv4 = new THREE.Vector3();
+class WarpStreakPool {
+  constructor(scene, count) {
+    this.mesh = new THREE.InstancedMesh(new THREE.BoxGeometry(1, 1, 1),
+      new THREE.MeshBasicMaterial({ color: 0xbfe8ff, transparent: true, opacity: 0,
+        blending: THREE.AdditiveBlending, depthWrite: false }), count);
+    this.mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+    this.mesh.frustumCulled = false;
+    this.mesh.renderOrder = 3;
+    this.mesh.visible = false;
+    scene.add(this.mesh);
+    this.count = count;
+    this.dummy = new THREE.Object3D();
+    this.s = [];
+    for (let i = 0; i < count; i++) {
+      const a = U.rand(0, U.TAU), r = 26 + Math.sqrt(Math.random()) * 70;
+      this.s.push({ p: Math.random(), ox: Math.cos(a) * r, oy: Math.sin(a) * r, len: U.rand(0.5, 1.5) });
+    }
+    this.gain = 0;
+  }
+  update(dt) {
+    const pl = G.player;
+    const sp = (pl && pl.alive) ? pl.vel.length() : 0;
+    // envelope: nothing at cruise (130), full at boost (235+)
+    const want = U.clamp((sp - 132) / 88, 0, 1);
+    this.gain = U.damp(this.gain, want, 5, dt);
+    this.mesh.visible = this.gain > 0.03;
+    if (!this.mesh.visible) return;
+    this.mesh.material.opacity = 0.55 * this.gain;
+    _wv1.copy(pl.vel).normalize();                       // travel axis
+    _wv2.set(_wv1.z, 0, -_wv1.x);                        // right-ish basis
+    if (_wv2.lengthSq() < 1e-5) _wv2.set(1, 0, 0);
+    _wv2.normalize();
+    _wv3.crossVectors(_wv1, _wv2);                       // up-ish basis
+    _wv4.set(0, 0, 1);
+    this.dummy.quaternion.setFromUnitVectors(_wv4, _wv1);
+    const step = (sp * dt) / 260;
+    for (let i = 0; i < this.count; i++) {
+      const s = this.s[i];
+      s.p -= step;
+      if (s.p < 0) {
+        s.p += 1;
+        const a = U.rand(0, U.TAU), r = 26 + Math.sqrt(Math.random()) * 70;
+        s.ox = Math.cos(a) * r; s.oy = Math.sin(a) * r; s.len = U.rand(0.5, 1.5);
+      }
+      // p=1 ahead (+130u) → p=0 behind (−40u), relative to the ship
+      const along = -40 + 170 * s.p;
+      this.dummy.position.copy(pl.pos)
+        .addScaledVector(_wv1, along)
+        .addScaledVector(_wv2, s.ox)
+        .addScaledVector(_wv3, s.oy);
+      const len = 6 + 46 * this.gain * s.len;
+      this.dummy.scale.set(0.12, 0.12, len);
+      this.dummy.updateMatrix();
+      this.mesh.setMatrixAt(i, this.dummy.matrix);
+    }
+    this.mesh.instanceMatrix.needsUpdate = true;
+  }
+  /* run teardown: hide the field and zero the envelope so a new run's first
+     frames never show leftover streaks at cruise speed */
+  clear() {
+    this.gain = 0;
+    this.mesh.visible = false;
+    this.mesh.material.opacity = 0;
+  }
+}
 const FX = {
   trauma: 0,
   kickAmt: 0,
@@ -536,6 +608,8 @@ const FX = {
     this.shockwaves = new ShockwavePool(scene, CFG.fx.maxShockwaves || 6);
     // UPGRADE(v1.5): turbulent shader fireballs (tier-gated count)
     this.fireballs = new FireballPool(scene, CFG.fx.quality >= 2 ? 6 : 2);
+    // UPGRADE(graphics v1.8.1): boost warp streaks (speed readout for the eye)
+    this.streaks = new WarpStreakPool(scene, CFG.fx.maxStreaks || 56);
     // dedicated flickery muzzle light (alternates between two for fast re-fire)
     this.muzzleLights = [new THREE.PointLight(0x9ff3ff, 0, 90, 2),
                          new THREE.PointLight(0xffb46a, 0, 90, 2)];
@@ -762,6 +836,7 @@ const FX = {
     this.embers.update(dt);
     this.shockwaves.update(dt);
     this.fireballs.update(dt);
+    this.streaks.update(dt);
     // v1.5 envelopes: kick decays fast (the "punch"), pulse follows CFG
     this.kickAmt = Math.max(0, this.kickAmt - 6 * dt);
     this.pulse = Math.max(0, this.pulse - CFG.postfx.decay * dt);
@@ -787,6 +862,7 @@ const FX = {
 
   clear() { this.particles.clear(); this.debris.clear(); this.rings.clear(); this.lights.clear();
     this.flashes.clear(); this.embers.clear(); this.shockwaves.clear(); this.fireballs.clear();
+    this.streaks.clear();
     this._queue.length = 0;
     this.trauma = 0; this.kickAmt = 0; this.pulse = 0; },
 };

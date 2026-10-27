@@ -54,7 +54,8 @@ function makeEl(tag, initialClasses) {
     removeEventListener() {},
     dispatchEvent(ev) { ev = ev || {}; ev.target = ev.target || el; ev.preventDefault = ev.preventDefault || (() => {}); (this._listeners[ev.type] || []).forEach((f) => f(ev)); return true; },
     appendChild(c) { el.children.push(c); c.parentNode = el; return c; },
-    removeChild() {}, remove() {},
+    removeChild(c) { const i = el.children.indexOf(c); if (i >= 0) el.children.splice(i, 1); return c; }, remove() {},
+    get firstChild() { return el.children[0] || null; },
     querySelector(sel) { return el._q(sel); },
     querySelectorAll() { return []; },
     _q(sel) {
@@ -97,6 +98,11 @@ const documentStub = {
     return elements.get(id);
   },
   addEventListener() {}, removeEventListener() {},
+  // FIX(harness): boot() wires the v1.6 start-screen buttons via
+  // document.querySelectorAll — stub it (Node-only; browsers unaffected)
+  querySelectorAll() { return []; },
+  // FIX(harness): HUD.applyHudScale() writes --hs via documentElement
+  documentElement: { style: { setProperty() {}, removeProperty() {} } },
   body: makeEl('body'),
   hidden: false,
   pointerLockElement: null,
@@ -142,6 +148,11 @@ StubRenderer.prototype.getSize = function (v) { return v.set(1280, 720); };
 StubRenderer.prototype.render = function () {};
 StubRenderer.prototype.setRenderTarget = function () {};
 StubRenderer.prototype.getRenderTarget = function () { return null; };
+// FIX(harness): real WebGLRenderer.compile() exists in r128; PMREMGenerator
+// calls it during buildEnvironment(). Without it the env-map bake throws
+// (caught, but logged as noise and unmeasured).
+StubRenderer.prototype.compile = function () {};
+StubRenderer.prototype.compileEquirectangularShader = function () {};
 StubRenderer.prototype.getClearColor = function (t) { return t && t.setRGB ? t.setRGB(0, 0, 0) : t; };
 StubRenderer.prototype.getClearAlpha = function () { return 1; };
 StubRenderer.prototype.setClearColor = function () {};
@@ -209,7 +220,12 @@ const ALL_ACTIONS = ['god', 'ammo', 'noclip', 'ghost', 'tier', 'oneshot', 'heal'
   's-vanguard', 's-ally', 's-lancer', 's-hornets',
   's-fighter', 's-gunship', 's-bomber', 's-drone5', 's-mine', 's-turret',
   's-ravager', 's-sentinel', 's-interceptor', 's-hive', 's-elite', 's-interdictor',
-  's-boss', 's-bossalt'];
+  's-boss', 's-bossalt',
+  // v1.8.2 sandbox toggle (unlocks every weapon, god + one-shot + inf ammo)
+  'maxed',
+  // v1.8 / v1.8.1 roster + support hulls (the panel carries these too)
+  's-prowler', 's-reaper', 's-stalker', 's-sapper', 's-warden',
+  's-wasps', 's-tug', 's-spotter', 's-sweeper'];
 
 function openConsole() {
   if (!G.cheats.isOpen()) G.cheats.togglePanel();

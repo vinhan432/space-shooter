@@ -179,6 +179,26 @@ body{font-family:var(--mono);color:var(--c2);-webkit-user-select:none;user-selec
 .skill-chip.ready .sk-fill{color:var(--good)}
 .skill-chip.locked{opacity:.32;border-color:rgba(90,100,110,.5)}
 .skill-chip.locked .sk-fill{color:#5a6a78}
+
+/* ---------- touch THRUST slider (Input.touch only) ----------
+   FIX(controls): phones had drag-look + fire but NO way to move — the
+   flight model was keyboard-only for translation. This persistent slider
+   is the throttle: full-forward engages the afterburner, the middle band
+   auto-strafes, bottom = brake. Lives in the SAFE bottom-right band, clear
+   of the steering drag surface and the radar. */
+#touch-thrust{position:absolute;bottom:max(150px,calc(env(safe-area-inset-bottom) + 150px));
+  right:max(12px,env(safe-area-inset-right));width:58px;height:220px;z-index:14;
+  display:none;pointer-events:auto;background:rgba(7,13,20,.5);
+  border:1px solid var(--c1-dim);border-radius:29px;overflow:hidden;
+  touch-action:none}
+#touch-thrust::before{content:"";position:absolute;left:8px;top:12px;bottom:12px;width:2px;
+  background:repeating-linear-gradient(180deg,rgba(95,232,255,.5) 0 4px,transparent 4px 10px)}
+#touch-thrust-thumb{position:absolute;left:50%;top:50%;width:40px;height:40px;
+  transform:translate(-50%,-50%);border-radius:50%;background:rgba(95,232,255,.25);
+  border:2px solid var(--c1);box-shadow:0 0 12px rgba(95,232,255,.4);transition:top .08s linear}
+#touch-thrust-label{position:absolute;left:0;right:0;bottom:6px;text-align:center;
+  font-size:8px;letter-spacing:1px;color:var(--c1)}
+#hud.touch-ui #touch-thrust{display:block}
 #lock-tags{position:absolute;inset:0;pointer-events:none}
 .tagbox{position:absolute;width:34px;height:34px;pointer-events:none;transform-origin:0 0}
 .tagbox span{position:absolute;inset:0;border:1.5px solid var(--gold);
@@ -205,6 +225,25 @@ body{font-family:var(--mono);color:var(--c2);-webkit-user-select:none;user-selec
 #radar-label{font-size:9px;letter-spacing:4px;color:var(--c2);margin-top:3px}
 #radar{display:block;border-radius:50%;border:1px solid var(--c1-dim);
   box-shadow:0 0 24px rgba(95,232,255,.08),inset 0 0 30px rgba(95,232,255,.05)}
+
+/* ---------- target-lead pip (predicted intercept) ---------- */
+#lead-marker{position:absolute;left:0;top:0;width:18px;height:18px;pointer-events:none;
+  display:none;transition:opacity .1s}
+#lead-marker .lm-ring{position:absolute;inset:0;border:1px solid var(--gold);border-radius:50%;
+  opacity:.55}
+#lead-marker .lm-dot{position:absolute;left:50%;top:50%;width:4px;height:4px;border-radius:50%;
+  background:var(--gold);box-shadow:0 0 6px rgba(255,200,87,.9);transform:translate(-50%,-50%)}
+#lead-marker.hot .lm-ring{border-color:rgba(255,200,87,.35);opacity:.4}
+
+/* ---------- briefing panel extra line ---------- */
+#comms-log .cl-hint{margin-top:8px;font-size:10px;letter-spacing:2px;color:var(--gold);
+  border-top:1px solid rgba(255,200,87,.25);padding-top:6px}
+
+/* ---------- weapon slot: locked (progression ladder) ---------- */
+.slot.locked{opacity:.4;filter:grayscale(.55)}
+.slot.locked .slot-name{color:#8a97a3}
+.slot.locked .slot-sub{color:var(--gold);opacity:.8}
+.slot.locked.active{border-color:var(--gold)}
 
 /* ---------- hitmarker (shot-connect feedback) ---------- */
 #hitmarker{position:absolute;left:50%;top:50%;width:26px;height:26px;margin:-13px 0 0 -13px;
@@ -275,8 +314,11 @@ body{font-family:var(--mono);color:var(--c2);-webkit-user-select:none;user-selec
 #over-stats{margin-top:24px;font-size:13px;line-height:2;letter-spacing:2px;color:var(--c2)}
 #over-stats b{color:#dff6ff;font-weight:400}
 .btn{margin-top:28px;padding:11px 40px;font-family:var(--mono);font-size:14px;letter-spacing:6px;
-  color:#dff6ff;background:rgba(20,40,60,.55);border:1px solid var(--c1);cursor:pointer}
-.btn:hover{background:rgba(40,90,120,.7);box-shadow:0 0 22px rgba(95,232,255,.4)}
+  color:#dff6ff;background:rgba(20,40,60,.55);border:1px solid var(--c1);cursor:pointer;
+  min-height:44px;touch-action:manipulation}
+/* FIX(touch): :hover is meaningless on touch — every button class gets an
+   explicit :active pressed state so taps give visual feedback. */
+.btn:active{background:rgba(40,90,120,.7);box-shadow:0 0 22px rgba(95,232,255,.4)}
 #screen-error .title{font-size:30px;color:#ffb3a6;letter-spacing:8px;
   text-shadow:0 0 20px rgba(255,80,60,.8)}
 #error-msg{margin-top:18px;font-size:12px;color:var(--c2);max-width:520px;line-height:1.7}
@@ -293,6 +335,7 @@ body{font-family:var(--mono);color:var(--c2);-webkit-user-select:none;user-selec
   background:rgba(16,30,44,.55);border:1px solid var(--c1-dim);color:#dff6ff}
 .mode-btn:hover{background:rgba(40,90,120,.7);border-color:var(--c1);
   box-shadow:0 0 22px rgba(95,232,255,.35)}
+.mode-btn:active{background:rgba(40,90,120,.7);border-color:var(--c1);box-shadow:0 0 22px rgba(95,232,255,.35)}
 .mode-btn .mode-name{font-size:17px;letter-spacing:6px;color:var(--c1)}
 .mode-btn:hover .mode-name{color:#eaf9ff}
 .mode-btn .mode-desc{font-size:10px;line-height:1.7;color:var(--c2);margin-top:8px;letter-spacing:.5px}
@@ -347,6 +390,21 @@ body{font-family:var(--mono);color:var(--c2);-webkit-user-select:none;user-selec
 #hud.fp #stats-panel{bottom:190px}
 
 /* ---------- cheat / dev console (hidden until unlocked) ---------- */
+/* ---------- touch rotate prompt (portrait phones) ----------
+   The flight HUD is a landscape instrument; portrait shows a clear
+   "rotate your phone" gate instead of a broken layout. JS flips it away
+   once the device reports landscape (it also has a desktop-mode CSS
+   guard: only ever displays under (pointer:coarse) + (orientation:portrait)). */
+#rotate-gate{position:absolute;inset:0;z-index:60;display:none;flex-direction:column;
+  align-items:center;justify-content:center;text-align:center;gap:14px;
+  background:rgba(2,3,8,.96);color:#dff6ff;pointer-events:auto}
+#rotate-gate .rg-icon{font-size:52px;letter-spacing:8px;color:var(--c1);
+  text-shadow:0 0 24px rgba(95,232,255,.7)}
+#rotate-gate .rg-title{font-size:16px;letter-spacing:6px}
+#rotate-gate .rg-sub{font-size:11px;letter-spacing:2px;color:var(--c2);max-width:280px;line-height:1.8}
+@media (pointer:coarse) and (orientation:portrait){
+  #rotate-gate.touch{display:flex}
+}
 #cheat-panel{position:absolute;top:50%;left:18px;transform:translateY(-50%);z-index:30;
   width:216px;background:rgba(5,10,16,.93);border:1px solid rgba(255,200,87,.4);
   font-size:10px;letter-spacing:1px;color:#c9d8e4;pointer-events:auto}
@@ -425,6 +483,7 @@ body{font-family:var(--mono);color:var(--c2);-webkit-user-select:none;user-selec
   .slot{width:96px}
   .slot .slot-name{font-size:9.5px}
   .slot.slot-sm{width:66px}
+  #touch-thrust{height:160px;width:48px;bottom:max(190px,calc(env(safe-area-inset-bottom) + 190px))}
   /* cockpit layout keeps its wider slots — slim them to fit the same band */
   #hud.fp .slot{width:84px;padding:3px 6px}
   #hud.fp .slot .slot-name{font-size:9px}
@@ -438,6 +497,9 @@ body{font-family:var(--mono);color:var(--c2);-webkit-user-select:none;user-selec
   #hud-tl{width:200px}
   #banner-main{font-size:26px;letter-spacing:8px}
   #hud-tc{width:88vw}
+  /* phones: min-height keeps tap targets ≥44px even when rows compress */
+  .mode-btn,.ship-btn,.diff-btn,.mod-btn,.upg-btn{min-height:44px}
+  #pause-actions .btn{min-height:44px}
   /* cockpit layout: status panel stacks above the chips, not beside them */
   #hud.fp #hud-tl{bottom:230px;width:172px}
   #hud.fp #skill-row{bottom:140px}
@@ -500,6 +562,10 @@ body{font-family:var(--mono);color:var(--c2);-webkit-user-select:none;user-selec
 .util-btn{padding:7px 16px;font-family:var(--mono);font-size:11px;letter-spacing:3px;cursor:pointer;
   background:rgba(12,22,34,.55);border:1px solid rgba(60,74,90,.6);color:#9db4c8}
 .util-btn:hover{border-color:var(--c1);color:#dff6ff}
+/* FIX(touch): pressed-state feedback (hover doesn't exist on phones) + a
+   comfortable thumb target. */
+.util-btn:active{border-color:var(--c1);color:#dff6ff;background:rgba(30,60,85,.5)}
+.util-btn{min-height:44px;touch-action:manipulation}
 .util-btn.on{border-color:var(--gold);color:var(--gold)}
 .util-btn .credit{color:var(--gold);margin-left:8px}
 
@@ -561,8 +627,11 @@ body{font-family:var(--mono);color:var(--c2);-webkit-user-select:none;user-selec
 @keyframes radioIn{0%{opacity:0;transform:translateY(8px)}8%{opacity:1;transform:translateY(0)}
   78%{opacity:1}100%{opacity:0}}
 
-/* chassis identity tag (persistent HUD readout) */
-#chassis-tag{position:absolute;top:0;right:0;font-size:9px;letter-spacing:2px;color:#7fa8c0;
+/* chassis identity tag (persistent HUD readout) — FIX(layout): was
+   position:absolute pinned to the top-right corner, which laid it OVER the
+   SCORE label at every size (and over WAVE once the compact reflow turned
+   the rows inline). It is now the first row in normal flow. */
+#chassis-tag{position:static;font-size:9px;letter-spacing:2px;color:#7fa8c0;
   border-bottom:1px solid rgba(95,232,255,.2);padding:2px 6px;display:block;margin-bottom:4px;text-align:right}
 
 /* tutorial prompt */
@@ -631,12 +700,70 @@ body.cb #banner.gold #banner-main{color:#ffe9a0}
 @media (max-width:560px) and (orientation:portrait){
   #radar-wrap{bottom:222px;right:12px}
   #hud.fp #radar-wrap{bottom:222px;right:12px}
+  #touch-thrust{bottom:max(238px,calc(env(safe-area-inset-bottom) + 238px))}
 }
 /* ---------- touch chrome: the pause button owns the top-right corner, so
    the score block and the alert/boss line step down to clear it ---------- */
 #hud.touch-ui #btn-touch-pause{display:block}
 #hud.touch-ui #hud-tr{top:max(60px,env(safe-area-inset-top))}
 #hud.touch-ui #hud-tc{top:max(60px,env(safe-area-inset-top))}
+
+/* ============================================================================
+   FIX(layout): top-strip + bottom-strip collisions
+   ----------------------------------------------------------------------------
+   The centered alert/boss strip (#hud-tc, fixed 640px) and the right-hand
+   score block (#hud-tr) had no mutual exclusion: below ~1100px they grew
+   into each other, and on phones both were parked in the same band. On
+   small screens the alert strip now stacks UNDER the score block; on wide
+   screens it reserves the score column's width. The weapon battery also
+   gets a max width on touch/narrow layouts so it can never run under the
+   radar scope in the corner.
+============================================================================ */
+@media (min-width:981px){
+  /* never wider than what the centered column can have without touching
+     the top-left status block (~288px) or the score block on the right */
+  #hud-tc{width:min(640px,calc(100vw - 560px))}
+  /* the score column needs room for "MAP n/10 — WAVE n" on one line */
+  #hud-tr{min-width:180px}
+}
+@media (max-width:980px){
+  /* score block gets a hard column so the reflowed rows wrap inside it */
+  #hud-tr{width:min(52vw,300px)}
+  /* alert/boss strip keeps clear of BOTH top corners by construction: it
+     spans the free width with the top-left status block and the score
+     column's shares cut out (the old fixed 640px box + inline-block rows
+     collided from ~1080px down, and its text could ride over SHIELD). */
+  #hud-tc{left:0;right:0;width:auto;transform:none;
+    padding:0 calc(min(52vw,300px) + 30px) 0 min(270px,58vw)}
+}
+/* touch chrome stacks the score block BELOW the strip (see the touch-ui
+   rules above), so the right reserve shrinks to the pause button's corner
+   — the strip then keeps a usable text width on narrow phones. The strip
+   itself stays at the TOP: the pause button only owns the top-right
+   corner, and the 64px reserve keeps the strip's text clear of it. */
+#hud.touch-ui #hud-tc{top:max(14px,env(safe-area-inset-top));padding-right:64px}
+@media (max-width:560px){
+  /* narrow windows behave like phones: score block below the strip */
+  #hud-tr{top:max(60px,env(safe-area-inset-top))}
+  #hud-tc{padding-right:64px}
+  /* tiny widths: let long alert/boss text break inside its box instead of
+     bleeding over the corner readouts */
+  #alert-line{font-size:11px;letter-spacing:2px;overflow-wrap:anywhere}
+  #boss-name{font-size:10px;letter-spacing:3px;overflow-wrap:anywhere}
+}
+@media (pointer:coarse),(max-width:1500px){
+  /* Leave the radar scope its corner. The scope is 220px wide in the base
+     layout, so reserve 260px for the left-anchored strip and 520px
+     (symmetric) for the CENTERED cockpit strip. Below 1500px the 9-slot
+     battery cannot fit beside the scope, so it wraps — and a wrapped
+     battery is two rows tall, so the skill chips ride above it (measured
+     in HUD.stackChips, which also covers taller wraps on phones). */
+  #hud-bl{max-width:min(94vw,calc(100vw - 260px));flex-wrap:wrap;justify-content:center}
+  #hud.fp #hud-bl{max-width:min(94vw,calc(100vw - 520px))}
+}
+/* the ability chips ride above the battery whatever height it wrapped to
+   (HUD.stackChips measures it and publishes --skill-bottom) */
+#skill-row,#hud.fp #skill-row{bottom:var(--skill-bottom,96px)}
 </style>
 </head>
 <body>
@@ -699,6 +826,8 @@ body.cb #banner.gold #banner-main{color:#ffe9a0}
         <div id="lock-hp"><div id="lock-fill"></div></div>
       </div>
     </div>
+    <!-- target-lead pip: where to shoot a moving lock target (HUD.update) -->
+    <div id="lead-marker"><span class="lm-ring"></span><span class="lm-dot"></span></div>
 
     <!-- bottom-left: weapons (9-slot battery) -->
     <div id="overdrive-chip">OVERDRIVE 12s</div>
@@ -728,14 +857,14 @@ body.cb #banner.gold #banner-main{color:#ffe9a0}
 
     <!-- comms log, radio chatter, tutorial, wreck hold, target tag -->
     <div id="comms-log" class="hidden">
-      <div class="cl-head">COMMS LOG</div>
+      <div class="cl-head" id="cl-head">COMMS LOG</div>
       <div class="cl-close" id="comms-close">×</div>
       <div id="comms-body"></div>
     </div>
     <div id="radio-log"></div>
     <div id="tutorial-prompt" class="hidden"></div>
     <div id="wreck-progress">
-      <div class="wp-label">HOLD [E] — SALVAGE</div>
+      <div class="wp-label">HOLD [H] — SALVAGE</div>
       <div class="wp-track"><div class="wp-fill" id="wreck-fill"></div></div>
     </div>
     <div id="target-tag"></div>
@@ -746,11 +875,14 @@ body.cb #banner.gold #banner-main{color:#ffe9a0}
       <div id="radar-label">TACTICAL</div>
     </div>
 
+    <!-- touch THRUST slider (visible only when Input.touch engages) -->
+    <div id="touch-thrust"><div id="touch-thrust-thumb"></div><div id="touch-thrust-label">THRUST</div></div>
+
     <div id="popups"></div>
     <div id="hitmarker"></div>
     <div id="indicators"></div>
     <div id="stats-panel"></div>
-    <div id="hint-line">VOID LANCER v1.6.0 — DEPTH BUILD — NO EXTERNAL ASSETS</div>
+    <div id="hint-line">VOID LANCER v1.9.0 — SYSTEMS PASS — NO EXTERNAL ASSETS</div>
   </div>
 
   <!-- ================= FULL SCREENS ================= -->
@@ -773,22 +905,23 @@ body.cb #banner.gold #banner-main{color:#ffe9a0}
       <div><span class="k">1</span>-<span class="k">9</span> / <span class="k">X</span></div><div>switch weapon (9-slot battery)</div>
       <div><span class="k">V</span> <span class="k">B</span> <span class="k">N</span> <span class="k">G</span></div><div>flares / nova / blink / overdrive</div>
       <div><span class="k">F</span></div><div>cockpit / chase view</div>
+      <div><span class="k">H</span></div><div>hold near a derelict — salvage (see the radar diamonds)</div>
       <div><span class="k">M</span> <span class="k">P</span> <span class="k">`</span></div><div>mute / pause / debug stats</div>
       <div><span class="k">SHIFT</span> + <span class="k">.</span></div><div>dev console menu</div>
+      <div><span class="k">SETTINGS</span></div><div>steering assist · flight model · volume · quality</div>
       <div><span class="k">TOUCH</span></div><div>drag to steer · second finger fires · [II] pauses</div>
     </div>
     <div id="start-cta" class="blink">— SELECT MODE —</div>
-    <div id="mode-row">
-      <button class="mode-btn" id="btn-endless">
-        <div class="mode-name">ENDLESS</div>
-        <div class="mode-desc">Launchpad defense, ascent, then the infinite-wave arena.
-          Ship stock resets every run — just like it always has.</div>
-      </button>
-      <button class="mode-btn adventure" id="btn-adventure">
-        <div class="mode-name">ADVENTURE</div>
-        <div class="mode-desc">Ten sectors, ten capitals — black holes, nebulae and the last gate.
-          Choose a refit after every sector; dying anywhere restarts the run from the launchpad.</div>
-      </button>
+    <div id="mode-row">    <button class="mode-btn" id="btn-endless">
+      <div class="mode-name">ENDLESS</div>
+      <div class="mode-desc">Launchpad defense, ascent, then the infinite-wave arena.
+        Ship stock resets every run — just like it always has.</div>
+    </button>
+    <button class="mode-btn adventure" id="btn-adventure">
+      <div class="mode-name">ADVENTURE</div>
+      <div class="mode-desc">Ten sectors, ten capitals — black holes, nebulae and the last gate.
+        Choose a refit after every sector; dying anywhere restarts the run from the launchpad.</div>
+    </button>
     </div>
     <div id="ship-label">— SELECT CHASSIS —</div>
     <div id="ship-row">
@@ -840,7 +973,7 @@ body.cb #banner.gold #banner-main{color:#ffe9a0}
     </div>
 
     <div id="start-best">BEST SCORE&nbsp; 0</div>
-    <div id="hint-menu" style="margin-top:6px;font-size:9px;letter-spacing:3px;color:rgba(157,180,200,.4)">VOID LANCER v1.6.0</div>
+    <div id="hint-menu" style="margin-top:6px;font-size:9px;letter-spacing:3px;color:rgba(157,180,200,.4)">VOID LANCER v1.9.0</div>
   </div>
 
   <div id="screen-pause" class="screen hidden">
@@ -899,6 +1032,12 @@ body.cb #banner.gold #banner-main{color:#ffe9a0}
       <div class="set-row"><label>MOUSE SENSITIVITY</label>
         <span><input type="range" id="set-sens" min="0.4" max="2.5" step="0.05"><span class="set-val" id="val-sens"></span></span></div>
       <div class="set-row"><label>INVERT Y</label><input type="checkbox" id="set-invert"></div>
+      <div class="set-row"><label>STEERING ASSIST (AUTO-CENTER AIM)</label><input type="checkbox" id="set-assist"></div>
+      <div class="set-row"><label>FLIGHT MODEL</label>
+        <select id="set-fmodel">
+          <option value="arcade">ARCADE (DRAG BRAKES YOU)</option>
+          <option value="inertial">INERTIAL (MOMENTUM CARRIES)</option>
+        </select></div>
       <div class="set-row"><label>MASTER VOLUME</label>
         <span><input type="range" id="set-vol-master" min="0" max="1" step="0.05"><span class="set-val" id="val-vol-master"></span></span></div>
       <div class="set-row"><label>SFX VOLUME</label>
@@ -931,6 +1070,13 @@ body.cb #banner.gold #banner-main{color:#ffe9a0}
     <button id="photo-shot">SAVE SHOT [ENTER]</button>
     <button id="photo-hud">HUD: ON</button>
     <button id="photo-exit">EXIT [P]</button>
+  </div>
+
+  <!-- touch rotate gate (phones, portrait only — see #rotate-gate CSS) -->
+  <div id="rotate-gate">
+    <div class="rg-icon">⟳</div>
+    <div class="rg-title">ROTATE TO LANDSCAPE</div>
+    <div class="rg-sub">VOID LANCER's flight instruments are built for a wide cockpit view. Turn your phone sideways to fly.</div>
   </div>
 
   <!-- CAMPAIGN: phase-cut fade overlay (CSS transition, see #fade) -->
